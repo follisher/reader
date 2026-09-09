@@ -1,0 +1,15 @@
+.dart_tool/
+build/
+.flutter-plugins-dependencies
+.flutter-plugins
+.pub/
+.pub-cache/
+coverage/
+.idea/
+example/
+
+# Local platform configuration and signing material.
+**/local.properties
+**/key.properties
+**/*.keystore
+**/*.jks
