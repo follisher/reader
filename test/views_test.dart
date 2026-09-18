@@ -20,6 +20,21 @@ final book = Book(
 );
 
 class FakeRepository implements BookshelfRepository {
+  final notes = <String, List<Map<String, dynamic>>>{};
+  @override
+  Future<List<Map<String, dynamic>>> loadNotes(
+    String bookId,
+    ReaderNoteKind kind,
+  ) async => List.of(notes['$bookId:${kind.name}'] ?? []);
+  @override
+  Future<void> saveNotes(
+    String bookId,
+    ReaderNoteKind kind,
+    List<Map<String, dynamic>> value,
+  ) async {
+    notes['$bookId:${kind.name}'] = List.of(value);
+  }
+
   final saves = <ReadingLocation>[];
   ReaderSettings settings = const ReaderSettings();
   bool failOpen = false;
@@ -116,7 +131,7 @@ void main() {
           ],
         ),
       ];
-    await tester.pumpWidget(app(repo, ReaderView(book: book)));
+    await tester.pumpWidget(app(repo, HtmlReaderView(book: book)));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('目录'));
     await tester.pumpAndSettle();
@@ -193,7 +208,7 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final repo = FakeRepository();
-      await tester.pumpWidget(app(repo, ReaderView(book: book)));
+      await tester.pumpWidget(app(repo, HtmlReaderView(book: book)));
       await tester.pumpAndSettle();
       expect(find.textContaining('段落 1-8', findRichText: true), findsWidgets);
       await capture(tester, 'reader');
@@ -221,7 +236,7 @@ void main() {
   );
   testWidgets('reader displays recoverable file errors', (tester) async {
     final repo = FakeRepository()..failOpen = true;
-    await tester.pumpWidget(app(repo, ReaderView(book: book)));
+    await tester.pumpWidget(app(repo, HtmlReaderView(book: book)));
     await tester.pumpAndSettle();
     expect(find.text('图书文件不存在'), findsOneWidget);
     repo.failOpen = false;

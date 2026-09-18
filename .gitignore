@@ -6,7 +6,6 @@ build/
 .pub-cache/
 coverage/
 .idea/
-example/
 
 # Local platform configuration and signing material.
 **/local.properties

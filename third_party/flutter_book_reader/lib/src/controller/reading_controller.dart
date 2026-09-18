@@ -1,0 +1,98 @@
+import '../progress/reader_progress_store.dart';
+import '../reader_config.dart';
+import '../source/book_source.dart';
+import 'chapter_content_mixin.dart';
+import 'chapter_navigation_mixin.dart';
+import 'pagination_mixin.dart';
+import 'reader_controller_base.dart';
+import 'vertical_flow_mixin.dart';
+
+/// 阅读控制器：组合内容加载、分页、翻页、纵向流四项能力（混入），
+/// 是阅读器的单一逻辑核心，不含任何 Widget，便于独立单测。
+class ReadingController extends ReaderControllerBase
+    with
+        ChapterContentMixin,
+        PaginationMixin,
+        ChapterNavigationMixin,
+        VerticalFlowMixin {
+  ReadingController({
+    required BookSource source,
+    required BookManifest manifest,
+    ReaderConfig? config,
+    int startChapter = 0,
+    int startCharOffset = 0,
+  })  : _source = source,
+        _manifest = manifest,
+        _config = config ?? ReaderConfig.instance {
+    chapterIndex = startChapter.clamp(0, manifest.chapterCount - 1);
+    charOffset = startCharOffset;
+    flowChapters = <int>[chapterIndex];
+    _config.addListener(_onConfigChanged);
+    prefetchAround(chapterIndex);
+  }
+
+  final BookSource _source;
+  final BookManifest _manifest;
+  final ReaderConfig _config;
+
+  @override
+  BookSource get source => _source;
+
+  @override
+  BookManifest get manifest => _manifest;
+
+  @override
+  ReaderConfig get config => _config;
+
+  /// 当前阅读位置快照，供进度存储保存。
+  ReadingPosition get position =>
+      ReadingPosition(chapterIndex: chapterIndex, charOffset: charOffset);
+
+  /// 是否已到全书最后一页（无下一章且停在本章末页 / 空章）。
+  bool get isAtBookEnd =>
+      !hasNext && (pages.isEmpty || pageIndex >= pages.length - 1);
+
+  /// 付费章解锁状态变化后触发重建：重新执行锁定判定、展开已解锁章节。
+  /// 分页结果不受锁定影响，无需清缓存，仅通知视图重建。
+  void refreshLocks() => notifyListeners();
+
+  // —— 自动翻页 ——
+
+  bool _autoTurning = false;
+  Duration _autoTurnInterval = const Duration(seconds: 5);
+
+  /// 是否处于自动翻页态（分页模式定时翻页、纵向模式平滑自动滚动）。
+  bool get autoTurning => _autoTurning;
+
+  /// 自动翻页间隔（分页模式：每页停留时长；纵向模式：滚过约一屏的时长）。
+  Duration get autoTurnInterval => _autoTurnInterval;
+
+  // ignore: avoid_positional_boolean_parameters —— setter 式单参方法。
+  void setAutoTurning(bool active) {
+    if (_autoTurning == active) return;
+    _autoTurning = active;
+    notifyListeners();
+  }
+
+  void setAutoTurnInterval(Duration interval) {
+    // 下限 1s，避免过快导致连续翻页 / 滚动失控。
+    final Duration d = interval < const Duration(seconds: 1)
+        ? const Duration(seconds: 1)
+        : interval;
+    if (d == _autoTurnInterval) return;
+    _autoTurnInterval = d;
+    notifyListeners();
+  }
+
+  void _onConfigChanged() {
+    clearPageCache();
+    signature = '';
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _config.removeListener(_onConfigChanged);
+    super.dispose();
+  }
+}

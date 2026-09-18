@@ -39,7 +39,7 @@ class LocalBookParser implements BookParser {
     }
     final chapters = <BookChapter>[];
     final title = p.basenameWithoutExtension(fileName);
-    var heading = '正文';
+    var heading = title;
     var blocks = <String>[];
     void flush() {
       if (blocks.isEmpty) return;
@@ -63,6 +63,7 @@ class LocalBookParser implements BookParser {
       if (chapterPattern.hasMatch(trimmed)) {
         flush();
         heading = trimmed;
+        continue;
       }
       // Bound very long unbroken paragraphs and chapters for predictable layout.
       for (var start = 0; start < trimmed.length;) {
@@ -78,11 +79,14 @@ class LocalBookParser implements BookParser {
         start = end;
         if (blocks.length >= 100) {
           flush();
-          heading = '正文 · ${chapters.length + 1}';
+          heading = '$title · ${chapters.length + 1}';
         }
       }
     }
     flush();
+    if (chapters.isEmpty) {
+      if (blocks.isNotEmpty) flush();
+    }
     if (chapters.isEmpty) throw const FormatException('这本书没有可阅读的正文');
     return MemoryBookContent(title: title, author: '', chapters: chapters);
   }
@@ -130,12 +134,22 @@ class LocalBookParser implements BookParser {
     if (opfPath == null) throw const FormatException('EPUB 内容清单路径为空');
     final opf = XmlDocument.parse(read(opfPath));
     final elements = opf.descendants.whereType<XmlElement>().toList();
-    String metadata(String name) =>
-        elements
-            .where((e) => e.name.local == name)
-            .map((e) => e.innerText.trim())
-            .firstOrNull ??
-        '';
+    String metadata(String name) {
+      final values = elements
+          .where((e) => e.name.local == name)
+          .map((e) => e.innerText.trim())
+          .where((value) => value.isNotEmpty)
+          .toList();
+      if (values.isEmpty) return '';
+      // EPUB files may provide localized title metadata in multiple entries.
+      // Prefer a Chinese title when one is available instead of blindly using
+      // the first (often English) entry.
+      if (name == 'title') {
+        final chinese = values.where((value) => RegExp(r'[\u3400-\u9FFF]').hasMatch(value));
+        if (chinese.isNotEmpty) return chinese.first;
+      }
+      return values.first;
+    }
     final items = <String, String>{};
     for (final item in elements.where((e) => e.name.local == 'item')) {
       final id = item.getAttribute('id');

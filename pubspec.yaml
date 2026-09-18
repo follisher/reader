@@ -19,8 +19,14 @@ dependencies:
   path_provider_android: '>=2.2.20 <2.3.0'
   sqflite: ^2.4.2
   file_selector: ^1.1.0
+  # 12.x applies a legacy kotlin-android plugin that conflicts with the
+  # consuming app's AGP 9 built-in Kotlin setup.
+  share_plus:  ^13.3.0
+  url_launcher: ^6.3.2
   flutter_widget_from_html_core: ^0.17.0
   scrollable_positioned_list: ^0.3.8
+  flutter_book_reader:
+    path: third_party/flutter_book_reader
 dev_dependencies:
   flutter_test:
     sdk: flutter

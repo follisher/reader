@@ -2,11 +2,13 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'models.dart';
 import 'parser.dart';
 import 'providers.dart';
+import 'theme/reader_palette.dart';
 
 class BookshelfView extends ConsumerStatefulWidget {
   const BookshelfView({super.key, required this.onBookTap});
@@ -27,6 +29,31 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _importBundledBooks();
+  }
+
+  Future<void> _importBundledBooks() async {
+    try {
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      final assets = manifest.listAssets().where((path) {
+        final lower = path.toLowerCase();
+        return (lower.startsWith('assets/books/') ||
+                lower.startsWith('packages/reader/assets/books/')) &&
+            (lower.endsWith('.epub') || lower.endsWith('.txt'));
+      });
+      for (final path in assets) {
+        final data = await rootBundle.load(path);
+        await ref
+            .read(bookshelfRepositoryProvider)
+            .importBytes(
+              data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+              path.split('/').last,
+              source: BookSource.builtIn,
+            );
+      }
+    } catch (_) {
+      // Bundled books are optional; keep the normal bookshelf usable.
+    }
   }
 
   @override
@@ -136,11 +163,12 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
       appBar: AppBar(
         title: const Text('我的书架'),
         actions: [
-          IconButton(
-            tooltip: '导入图书',
-            onPressed: _busy ? null : _import,
-            icon: const Icon(Icons.add),
-          ),
+          //第一版，暂时不加入外部导入
+          // IconButton(
+          //   tooltip: '导入图书',
+          //   onPressed: _busy ? null : _import,
+          //   icon: const Icon(Icons.add),
+          // ),
         ],
       ),
       body: Column(
@@ -207,7 +235,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
                           const SizedBox(height: 20),
                           Text(
                             all.isEmpty ? '把想读的书，放在这里' : '没有匹配的图书',
-                            style: Theme.of(context).textTheme.titleLarge,
+                            style: const TextStyle(
+                              color: ReaderPalette.ink,
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                           const SizedBox(height: 12),
                           const Text('支持 EPUB 和 UTF-8 TXT，导入后可离线阅读'),
@@ -275,9 +307,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
                                           book.title,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.titleMedium,
+                                          style: const TextStyle(
+                                            color: ReaderPalette.ink,
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w700,
+                                          ),
                                         ),
                                         const SizedBox(height: 6),
                                         Text(
@@ -290,12 +324,20 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
                                         const Spacer(),
                                         LinearProgressIndicator(
                                           value: book.location.progress,
+                                          minHeight: 5,
+                                          borderRadius: BorderRadius.circular(
+                                            3,
+                                          ),
                                         ),
                                         const SizedBox(height: 5),
                                         Text(
                                           book.location.progress == 0
                                               ? '尚未阅读'
                                               : '已读 ${(book.location.progress * 100).round()}%',
+                                          style: const TextStyle(
+                                            color: ReaderPalette.mutedSecondary,
+                                            fontSize: 12,
+                                          ),
                                         ),
                                       ],
                                     ),

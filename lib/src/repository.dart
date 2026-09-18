@@ -11,7 +11,18 @@ import 'package:sqflite/sqflite.dart';
 import 'models.dart';
 import 'parser.dart';
 
+enum ReaderNoteKind { bookmark, underline, comment }
+
 abstract interface class BookshelfRepository {
+  Future<List<Map<String, dynamic>>> loadNotes(
+    String bookId,
+    ReaderNoteKind kind,
+  );
+  Future<void> saveNotes(
+    String bookId,
+    ReaderNoteKind kind,
+    List<Map<String, dynamic>> notes,
+  );
   Stream<List<Book>> watchBooks();
   Future<Book> importBytes(
     Uint8List bytes,
@@ -59,16 +70,24 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 3,
+        version: 5,
         onCreate: (db, _) async {
           await db.execute(
-            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0)',
+            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER)',
           );
           await db.execute(
-            'CREATE TABLE settings (id INTEGER PRIMARY KEY, font_size REAL NOT NULL, dark INTEGER NOT NULL)',
+            'CREATE TABLE settings (id INTEGER PRIMARY KEY, font_size REAL NOT NULL, dark INTEGER NOT NULL, options TEXT)',
           );
+          await _createNotesTable(db);
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 5) await _createNotesTable(db);
+          if (oldVersion < 4) {
+            await db.execute(
+              'ALTER TABLE books ADD COLUMN char_offset INTEGER',
+            );
+            await db.execute('ALTER TABLE settings ADD COLUMN options TEXT');
+          }
           if (oldVersion < 2) {
             await db.execute(
               'ALTER TABLE books ADD COLUMN cover_file_name TEXT',
@@ -86,6 +105,79 @@ class LocalBookshelfRepository implements BookshelfRepository {
       ),
     );
     return LocalBookshelfRepository._(root, db, parser ?? LocalBookParser());
+  }
+
+  static Future<void> _createNotesTable(Database db) => db.execute(
+    'CREATE TABLE reader_notes (book_id TEXT NOT NULL, kind TEXT NOT NULL, '
+    'note_key TEXT NOT NULL, payload TEXT NOT NULL, '
+    'PRIMARY KEY (book_id, kind, note_key))',
+  );
+
+  @override
+  Future<List<Map<String, dynamic>>> loadNotes(
+    String bookId,
+    ReaderNoteKind kind,
+  ) => _serial(() async {
+    final rows = await _db.query(
+      'reader_notes',
+      where: 'book_id = ? AND kind = ?',
+      whereArgs: [bookId, kind.name],
+      orderBy: 'rowid',
+    );
+    return rows
+        .map(
+          (row) => jsonDecode(row['payload'] as String) as Map<String, dynamic>,
+        )
+        .toList();
+  });
+
+  @override
+  Future<void> saveNotes(
+    String bookId,
+    ReaderNoteKind kind,
+    List<Map<String, dynamic>> notes,
+  ) {
+    // Snapshot before queuing: callers may reuse and mutate their lists.
+    final rows = notes
+        .map(
+          (note) => <String, Object?>{
+            'book_id': bookId,
+            'kind': kind.name,
+            'note_key': kind == ReaderNoteKind.bookmark
+                ? '${note['chapterIndex']}:${note['charOffset']}'
+                : '${note['chapterIndex']}:${note['start']}:${note['end']}'
+                      '${kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}',
+            'payload': jsonEncode(note),
+          },
+        )
+        .toList();
+    return _serial(
+      () => _db.transaction((txn) async {
+        // A queued write must not resurrect notes after a book was removed.
+        if ((await txn.query(
+          'books',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [bookId],
+        )).isEmpty) {
+          throw StateError('图书已移除，无法保存笔记');
+        }
+        await txn.delete(
+          'reader_notes',
+          where: 'book_id = ? AND kind = ?',
+          whereArgs: [bookId, kind.name],
+        );
+        final batch = txn.batch();
+        for (final row in rows) {
+          batch.insert(
+            'reader_notes',
+            row,
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await batch.commit(noResult: true);
+      }),
+    );
   }
 
   static Future<Directory> _defaultDirectory() async {
@@ -122,6 +214,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
     location: ReadingLocation(
       chapter: row['chapter'] as int,
       block: row['block'] as int,
+      charOffset: row['char_offset'] as int?,
       progress: (row['progress'] as num).toDouble(),
     ),
   );
@@ -285,7 +378,6 @@ class LocalBookshelfRepository implements BookshelfRepository {
       throw const FormatException('本地图书文件不存在，请移除后重新导入');
     }
     final content = await _parse(await file.readAsBytes(), book.fileName);
-    _memoryCache[book.id] = content;
     if (await _writeCache(book.id, content)) {
       await _db.update(
         'books',
@@ -295,7 +387,9 @@ class LocalBookshelfRepository implements BookshelfRepository {
       );
       _changes.add(null);
     }
-    return content;
+    final result = await _readCache(book.id) ?? content;
+    _memoryCache[book.id] = result;
+    return result;
   }
 
   @override
@@ -306,6 +400,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
           {
             'chapter': location.chapter,
             'block': location.block,
+            'char_offset': location.charOffset,
             'progress': location.progress.clamp(0, 1),
           },
           where: 'id = ?',
@@ -330,7 +425,14 @@ class LocalBookshelfRepository implements BookshelfRepository {
     _memoryCache.remove(bookId);
     final cache = Directory(p.join(directory.path, 'cache', bookId));
     if (await cache.exists()) await cache.delete(recursive: true);
-    await _db.delete('books', where: 'id = ?', whereArgs: [bookId]);
+    await _db.transaction((txn) async {
+      await txn.delete(
+        'reader_notes',
+        where: 'book_id = ?',
+        whereArgs: [bookId],
+      );
+      await txn.delete('books', where: 'id = ?', whereArgs: [bookId]);
+    });
     _changes.add(null);
   });
 
@@ -338,7 +440,18 @@ class LocalBookshelfRepository implements BookshelfRepository {
   Future<ReaderSettings> loadSettings() async {
     final rows = await _db.query('settings', where: 'id = 1');
     if (rows.isEmpty) return const ReaderSettings();
+    final options = rows.first['options'] == null
+        ? <String, dynamic>{}
+        : jsonDecode(rows.first['options'] as String) as Map<String, dynamic>;
     return ReaderSettings(
+      theme: options['theme'] as String? ?? 'yellow',
+      flipMode: options['flipMode'] as String? ?? 'scrollVertical',
+      lineHeight: (options['lineHeight'] as num?)?.toDouble() ?? 1.8,
+      paragraphSpacing: (options['paragraphSpacing'] as num?)?.toDouble() ?? 8,
+      firstLineIndent: options['firstLineIndent'] as int? ?? 2,
+      justify: options['justify'] as bool? ?? true,
+      dimLevel: (options['dimLevel'] as num?)?.toDouble() ?? 0,
+      fontFamily: options['fontFamily'] as String?,
       fontSize: (rows.first['font_size'] as num).toDouble().clamp(14, 32),
       dark: rows.first['dark'] == 1,
     );
@@ -350,6 +463,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
       'id': 1,
       'font_size': settings.fontSize,
       'dark': settings.dark ? 1 : 0,
+      'options': jsonEncode(settings.toJson()),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   });
 
@@ -420,8 +534,15 @@ class LocalBookshelfRepository implements BookshelfRepository {
         await file.parent.create(recursive: true);
         await file.writeAsBytes(bytes, flush: true);
       }
+      final chapterDirectory = Directory(p.join(cache.path, 'chapters'));
+      await chapterDirectory.create();
+      for (var i = 0; i < content.chapters.length; i++) {
+        await File(
+          p.join(chapterDirectory.path, '$i.json'),
+        ).writeAsString(jsonEncode(content.chapters[i].blocks), flush: true);
+      }
       final manifest = <String, Object?>{
-        'version': 1,
+        'version': 2,
         'title': content.title,
         'author': content.author,
         'coverResourcePath': content.coverResourcePath,
@@ -431,7 +552,6 @@ class LocalBookshelfRepository implements BookshelfRepository {
               'id': chapter.id,
               'title': chapter.title,
               'kind': chapter.kind.name,
-              'blocks': chapter.blocks,
             },
         ],
         'toc': _tocToJson(content.toc),
@@ -452,7 +572,13 @@ class LocalBookshelfRepository implements BookshelfRepository {
     try {
       if (!await manifest.exists()) return null;
       final data = jsonDecode(await manifest.readAsString());
-      if (data is! Map<String, dynamic> || data['version'] != 1) return null;
+      if (data is! Map<String, dynamic> || data['version'] != 2) return null;
+      // A partial cache must be rebuilt from the original file.
+      for (var i = 0; i < (data['chapters'] as List).length; i++) {
+        if (!await File(p.join(cache.path, 'chapters', '$i.json')).exists()) {
+          return null;
+        }
+      }
       return _CachedBookContent.fromJson(cache, data);
     } catch (_) {
       return null;
@@ -498,7 +624,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
   }
 }
 
-class _CachedBookContent implements BookContent {
+class _CachedBookContent implements OnDemandBookContent {
   _CachedBookContent({
     required this.directory,
     required this.title,
@@ -518,7 +644,7 @@ class _CachedBookContent implements BookContent {
         id: chapter['id'] as String,
         title: chapter['title'] as String,
         kind: BookChapterKind.values.byName(chapter['kind'] as String),
-        blocks: (chapter['blocks'] as List<dynamic>).cast<String>(),
+        blocks: const [],
       );
     }).toList();
     return _CachedBookContent(
@@ -528,6 +654,25 @@ class _CachedBookContent implements BookContent {
       chapters: chapters,
       toc: _tocFromJson(json['toc'] as List<dynamic>? ?? const []),
       coverResourcePath: json['coverResourcePath'] as String?,
+    );
+  }
+
+  @override
+  Future<BookChapter> loadChapter(int index) async {
+    final metadata = chapters[index];
+    final blocks =
+        (jsonDecode(
+                  await File(
+                    p.join(directory.path, 'chapters', '$index.json'),
+                  ).readAsString(),
+                )
+                as List<dynamic>)
+            .cast<String>();
+    return BookChapter(
+      id: metadata.id,
+      title: metadata.title,
+      kind: metadata.kind,
+      blocks: blocks,
     );
   }
 

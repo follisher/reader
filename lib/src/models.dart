@@ -5,17 +5,66 @@ enum BookFormat { txt, epub }
 enum BookSource { imported, builtIn, downloaded }
 
 class ReadingLocation {
-  const ReadingLocation({this.chapter = 0, this.block = 0, this.progress = 0});
+  const ReadingLocation({
+    this.chapter = 0,
+    this.block = 0,
+    this.progress = 0,
+    this.charOffset,
+  });
   final int chapter;
   // Content block, never a screen pixel/page: stable when typography changes.
   final int block;
   final double progress;
+
+  /// Offset in normalized chapter text, excluding layout indentation/newlines.
+  /// Null identifies a legacy block-based position.
+  final int? charOffset;
 }
 
 class ReaderSettings {
-  const ReaderSettings({this.fontSize = 20, this.dark = false});
+  const ReaderSettings({
+    this.fontSize = 20,
+    this.dark = false,
+    this.theme = 'yellow',
+    this.flipMode = 'scrollVertical',
+    this.lineHeight = 1.8,
+    this.paragraphSpacing = 8,
+    this.firstLineIndent = 2,
+    this.justify = true,
+    this.dimLevel = 0,
+    this.fontFamily,
+  });
   final double fontSize;
   final bool dark;
+  final String theme, flipMode;
+  final double lineHeight, paragraphSpacing, dimLevel;
+  final int firstLineIndent;
+  final bool justify;
+  final String? fontFamily;
+
+  ReaderSettings copyWith({double? fontSize, bool? dark}) => ReaderSettings(
+    fontSize: fontSize ?? this.fontSize,
+    dark: dark ?? this.dark,
+    theme: dark == false && theme == 'night' ? 'yellow' : theme,
+    flipMode: flipMode,
+    lineHeight: lineHeight,
+    paragraphSpacing: paragraphSpacing,
+    firstLineIndent: firstLineIndent,
+    justify: justify,
+    dimLevel: dimLevel,
+    fontFamily: fontFamily,
+  );
+
+  Map<String, Object?> toJson() => {
+    'theme': theme,
+    'flipMode': flipMode,
+    'lineHeight': lineHeight,
+    'paragraphSpacing': paragraphSpacing,
+    'firstLineIndent': firstLineIndent,
+    'justify': justify,
+    'dimLevel': dimLevel,
+    'fontFamily': fontFamily,
+  };
 }
 
 class Book {
@@ -76,6 +125,20 @@ abstract interface class BookContent {
   List<BookTocEntry> get toc;
   Future<Uint8List?> resource(String path);
   Future<Uint8List?> cover();
+}
+
+/// [chapters] contains metadata only; bodies are read individually.
+abstract interface class OnDemandBookContent implements BookContent {
+  Future<BookChapter> loadChapter(int index);
+}
+
+extension BookContentLoading on BookContent {
+  Future<BookChapter> readChapter(int index) async {
+    final content = this;
+    return content is OnDemandBookContent
+        ? content.loadChapter(index)
+        : chapters[index];
+  }
 }
 
 class MemoryBookContent implements BookContent {
