@@ -100,6 +100,24 @@ abstract class ReaderControllerBase extends ChangeNotifier {
   String chapterTitleAt(int index) => manifest.chapterTitles[index];
   String get currentChapterTitle => chapterTitleAt(chapterIndex);
 
+  Set<int> subsectionOffsetsFor(int chapter) {
+    final result = <int>{};
+    void visit(List<BookTocEntry> entries, {bool subsection = false}) {
+      for (final entry in entries) {
+        if (subsection && entry.chapterIndex == chapter) {
+          result.add(entry.charOffset);
+        }
+        visit(entry.children,
+            subsection: subsection || entry.children.isNotEmpty);
+      }
+    }
+
+    for (final entry in manifest.toc) {
+      visit(entry.children, subsection: true);
+    }
+    return result;
+  }
+
   bool get hasPrev => chapterIndex > 0;
   bool get hasNext => chapterIndex < chapterCount - 1;
 

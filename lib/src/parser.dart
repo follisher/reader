@@ -11,14 +11,17 @@ import 'models.dart';
 
 abstract interface class BookParser {
   bool supports(BookFormat format);
+
   Future<BookContent> parse(Uint8List bytes, String fileName);
 }
 
 class LocalBookParser implements BookParser {
   static const maxFileBytes = 50 * 1024 * 1024;
   static const maxExpandedBytes = 150 * 1024 * 1024;
+
   @override
   bool supports(BookFormat format) => true;
+
   @override
   Future<BookContent> parse(Uint8List bytes, String fileName) async {
     if (bytes.length > maxFileBytes) {
@@ -38,7 +41,7 @@ class LocalBookParser implements BookParser {
       throw const FormatException('TXT 请使用 UTF-8 编码保存后再导入');
     }
     final chapters = <BookChapter>[];
-    final title = p.basenameWithoutExtension(fileName);
+    final title = _decodeFileTitle(p.basenameWithoutExtension(fileName));
     var heading = title;
     var blocks = <String>[];
     void flush() {
@@ -145,11 +148,14 @@ class LocalBookParser implements BookParser {
       // Prefer a Chinese title when one is available instead of blindly using
       // the first (often English) entry.
       if (name == 'title') {
-        final chinese = values.where((value) => RegExp(r'[\u3400-\u9FFF]').hasMatch(value));
+        final chinese = values.where(
+          (value) => RegExp(r'[\u3400-\u9FFF]').hasMatch(value),
+        );
         if (chinese.isNotEmpty) return chinese.first;
       }
       return values.first;
     }
+
     final items = <String, String>{};
     for (final item in elements.where((e) => e.name.local == 'item')) {
       final id = item.getAttribute('id');
@@ -467,21 +473,137 @@ class LocalBookParser implements BookParser {
         }
       }
     }
+    // Some EPUBs omit a nav document (or list only chapter links) even though
+    // their XHTML contains useful h2/h3 section headings.  Keep the explicit
+    // navigation when present, and fill empty chapter entries from those
+    // headings so the reader can still offer section-level navigation.
+    final baseToc =
+        toc ??
+        [
+          for (var index = 0; index < chapters.length; index++)
+            BookTocEntry(
+              id: chapters[index].id,
+              title: chapters[index].title,
+              chapter: index,
+            ),
+        ];
+    final enrichedToc = _addHeadingEntries(baseToc, chapters);
+    final tocTitles = <int, String>{};
+    for (final entry in enrichedToc) {
+      final chapter = entry.chapter;
+      final title = entry.title.trim();
+      if (chapter != null && title.isNotEmpty && !_numericTitle(title)) {
+        tocTitles.putIfAbsent(chapter, () => title);
+      }
+    }
+    final titledChapters = [
+      for (var index = 0; index < chapters.length; index++)
+        BookChapter(
+          id: chapters[index].id,
+          title: _isPlaceholderTitle(chapters[index].title.trim())
+              ? (tocTitles[index] ?? '第 ${index + 1} 节')
+              : chapters[index].title,
+          blocks: chapters[index].blocks,
+          kind: chapters[index].kind,
+        ),
+    ];
+
+    // print(
+    //   '排查问题11：${_isPlaceholderTitle(metadata('title'))}   ____  '
+    //   '${p.basenameWithoutExtension(fileName)} '
+    //   ' ````   ${metadata('title')}',
+    // );
+
+    final metadataTitle = _decodeFileTitle(metadata('title'));
     return MemoryBookContent(
-      title: metadata('title').isEmpty
-          ? p.basenameWithoutExtension(fileName)
-          : metadata('title'),
+      title: _isPlaceholderTitle(metadataTitle)
+          ? _decodeFileTitle(p.basenameWithoutExtension(fileName))
+          : metadataTitle,
       author: metadata('creator'),
-      chapters: chapters,
-      toc: toc,
+      chapters: titledChapters,
+      toc: enrichedToc,
       resources: files,
       coverResourcePath: coverResourcePath,
     );
   }
 }
 
+List<BookTocEntry> _addHeadingEntries(
+  List<BookTocEntry> entries,
+  List<BookChapter> chapters,
+) {
+  return [
+    for (final entry in entries) _addHeadingEntriesToEntry(entry, chapters),
+  ];
+}
+
+BookTocEntry _addHeadingEntriesToEntry(
+  BookTocEntry entry,
+  List<BookChapter> chapters, {
+  bool inferHeadings = true,
+}) {
+  final children = [
+    for (final child in entry.children)
+      _addHeadingEntriesToEntry(child, chapters, inferHeadings: false),
+  ];
+  // Only chapter-level entries are expanded. Existing nested navigation is
+  // authoritative; inferred headings fill the common incomplete-nav case.
+  if (!inferHeadings || children.isNotEmpty || entry.chapter == null) {
+    return BookTocEntry(
+      id: entry.id,
+      title: entry.title,
+      chapter: entry.chapter,
+      block: entry.block,
+      children: children,
+    );
+  }
+  final chapterIndex = entry.chapter!;
+  if (chapterIndex < 0 || chapterIndex >= chapters.length) return entry;
+  final chapter = chapters[chapterIndex];
+  if (chapter.kind != BookChapterKind.content) return entry;
+  final headings = <BookTocEntry>[];
+  for (var block = 0; block < chapter.blocks.length; block++) {
+    final heading = html
+        .parseFragment(chapter.blocks[block])
+        .querySelector('h2,h3');
+    final title = heading?.text.trim() ?? '';
+    if (title.isEmpty) continue;
+    headings.add(
+      BookTocEntry(
+        id: '${entry.id}#heading-$block',
+        title: title,
+        chapter: chapterIndex,
+        block: block,
+      ),
+    );
+  }
+  if (headings.isEmpty) return entry;
+  return BookTocEntry(
+    id: entry.id,
+    title: entry.title,
+    chapter: entry.chapter,
+    block: entry.block,
+    children: headings,
+  );
+}
+
+String _decodeFileTitle(String value) {
+  final candidate = value.replaceAll('+', ' ');
+  if (RegExp(r'%(?![0-9A-Fa-f]{2})').hasMatch(candidate)) return value;
+  try {
+    final decoded = Uri.decodeComponent(candidate).trim();
+
+    return decoded.isEmpty ? value : decoded;
+  } catch (_) {
+    return value;
+  }
+}
+
 String _normalizedPageLabel(String value) =>
     value.trim().toLowerCase().replaceAll(RegExp(r'[\s_\-–—:：.]'), '');
+
+bool _numericTitle(String value) =>
+    RegExp(r'^[0-9０-９\s._\-:：/]+$').hasMatch(value);
 
 BookChapterKind? _conceptualPageKind(String value) {
   switch (_normalizedPageLabel(value)) {
@@ -506,6 +628,7 @@ BookChapterKind? _conceptualPageKind(String value) {
 }
 
 bool _isPlaceholderTitle(String value) {
+  if (_numericTitle(value.trim())) return true;
   switch (_normalizedPageLabel(value)) {
     case '':
     case '无标题':
@@ -523,11 +646,13 @@ String _displayTitle({
   required String pageTitle,
   required String fallback,
 }) {
-  final candidate = heading?.trim().isNotEmpty == true
-      ? heading!.trim()
-      : pageTitle;
+  final headingCandidate = heading?.trim() ?? '';
+  final candidate =
+      headingCandidate.isNotEmpty && !_isPlaceholderTitle(headingCandidate)
+      ? headingCandidate
+      : pageTitle.trim();
   return _isPlaceholderTitle(candidate)
-      ? ''
+      ? fallback
       : candidate.isEmpty
       ? fallback
       : candidate;

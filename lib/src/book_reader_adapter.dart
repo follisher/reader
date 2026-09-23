@@ -28,6 +28,41 @@ class RepositoryBookSource extends engine.BookSource {
   Future<engine.BookManifest> loadManifest() async {
     final data = await content();
     if (data.chapters.isEmpty) throw const FormatException('这本书没有可阅读的章节');
+    final chapterTexts = <int, Future<TextChapter>>{};
+    Future<TextChapter> textFor(int index) => chapterTexts.putIfAbsent(
+      index,
+      () async => TextChapter.fromChapter(await data.readChapter(index)),
+    );
+    Future<engine.BookTocEntry?> mapEntry(BookTocEntry entry) async {
+      final chapter = entry.chapter;
+      if (chapter == null || chapter < 0 || chapter >= data.chapters.length) {
+        return null;
+      }
+      final children = <engine.BookTocEntry>[];
+      for (final child in entry.children) {
+        final mapped = await mapEntry(child);
+        if (mapped != null) children.add(mapped);
+      }
+      final text = entry.block == null && children.isEmpty
+          ? null
+          : await textFor(chapter);
+      return engine.BookTocEntry(
+        id: entry.id,
+        title:entry.title,
+        chapterIndex: chapter,
+        charOffset: text == null
+            ? 0
+            : text.toEngine(text.canonicalForBlock(entry.block ?? 0), 2),
+        children: children,
+      );
+    }
+
+    final toc = <engine.BookTocEntry>[];
+    for (final entry in data.toc) {
+      final mapped = await mapEntry(entry);
+      if (mapped != null) toc.add(mapped);
+    }
+
     return engine.BookManifest(
       id: book.id,
       title: data.title,
@@ -35,6 +70,7 @@ class RepositoryBookSource extends engine.BookSource {
       intro: '',
       coverColor: const Color(0xFF728577),
       chapterTitles: data.chapters.map((c) => c.title).toList(),
+      toc: toc,
     );
   }
 

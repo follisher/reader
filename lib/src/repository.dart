@@ -51,6 +51,13 @@ Future<BookContent> _parseLocal((Uint8List, String) input) =>
     LocalBookParser().parse(input.$1, input.$2);
 
 class LocalBookshelfRepository implements BookshelfRepository {
+  /// Version of the on-disk cache JSON and chapter files.
+  static const cacheFormatVersion = 2;
+
+  /// Version of parser-derived output (titles, TOC and anchors). Increment
+  /// only when a parser change makes an existing parsed result stale.
+  static const parserRevision = 5;
+
   static const _maxCoverBytes = 10 * 1024 * 1024;
   LocalBookshelfRepository._(this.directory, this._db, this.parser);
   final Directory directory;
@@ -104,7 +111,13 @@ class LocalBookshelfRepository implements BookshelfRepository {
         },
       ),
     );
-    return LocalBookshelfRepository._(root, db, parser ?? LocalBookParser());
+    final repository = LocalBookshelfRepository._(
+      root,
+      db,
+      parser ?? LocalBookParser(),
+    );
+    await repository._repairEncodedTxtTitles();
+    return repository;
   }
 
   static Future<void> _createNotesTable(Database db) => db.execute(
@@ -191,6 +204,38 @@ class LocalBookshelfRepository implements BookshelfRepository {
       await legacyDirectory.rename(directory.path);
     }
     return directory;
+  }
+
+  static String _decodeStoredTitle(String value) {
+    final candidate = value.replaceAll('+', ' ');
+    if (RegExp(r'%(?![0-9A-Fa-f]{2})').hasMatch(candidate)) return value;
+    try {
+      final decoded = Uri.decodeComponent(candidate).trim();
+      return decoded.isEmpty ? value : decoded;
+    } catch (_) {
+      return value;
+    }
+  }
+
+  Future<void> _repairEncodedTxtTitles() async {
+    final rows = await _db.query(
+      'books',
+      columns: ['id', 'title', 'format'],
+      where: 'format = ?',
+      whereArgs: ['txt'],
+    );
+    for (final row in rows) {
+      final oldTitle = row['title'] as String;
+      final newTitle = _decodeStoredTitle(oldTitle);
+      if (newTitle != oldTitle) {
+        await _db.update(
+          'books',
+          {'title': newTitle},
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+      }
+    }
   }
 
   Future<T> _serial<T>(Future<T> Function() action) {
@@ -326,7 +371,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
       }
       final row = <String, Object?>{
         'id': id,
-        'title': content.title,
+        'title': _decodeStoredTitle(content.title),
         'author': content.author,
         'format': extension.substring(1),
         'source': source.name,
@@ -542,7 +587,8 @@ class LocalBookshelfRepository implements BookshelfRepository {
         ).writeAsString(jsonEncode(content.chapters[i].blocks), flush: true);
       }
       final manifest = <String, Object?>{
-        'version': 2,
+        'version': cacheFormatVersion,
+        'parserRevision': parserRevision,
         'title': content.title,
         'author': content.author,
         'coverResourcePath': content.coverResourcePath,
@@ -572,7 +618,11 @@ class LocalBookshelfRepository implements BookshelfRepository {
     try {
       if (!await manifest.exists()) return null;
       final data = jsonDecode(await manifest.readAsString());
-      if (data is! Map<String, dynamic> || data['version'] != 2) return null;
+      if (data is! Map<String, dynamic> ||
+          data['version'] != cacheFormatVersion ||
+          data['parserRevision'] != parserRevision) {
+        return null;
+      }
       // A partial cache must be rebuilt from the original file.
       for (var i = 0; i < (data['chapters'] as List).length; i++) {
         if (!await File(p.join(cache.path, 'chapters', '$i.json')).exists()) {

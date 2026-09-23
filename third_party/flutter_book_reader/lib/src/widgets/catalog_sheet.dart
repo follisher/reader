@@ -5,6 +5,7 @@ import '../comment/reader_comment_store.dart';
 import '../progress/reader_progress_store.dart';
 import '../reader_labels.dart';
 import '../reader_theme.dart';
+import '../source/book_source.dart';
 import '../underline/reader_underline_store.dart';
 
 /// 书籍信息抽屉：顶部书籍信息区（封面 + 书名 + 作者），下方「详情 / 目录 / 书签」
@@ -23,7 +24,9 @@ class CatalogSheet extends StatefulWidget {
     required this.intro,
     required this.coverColor,
     required this.chapterTitles,
+    this.toc = const <BookTocEntry>[],
     required this.currentIndex,
+    this.currentOffset = 0,
     required this.theme,
     this.bookmarks = const <Bookmark>[],
     this.underlines = const <Underline>[],
@@ -40,7 +43,9 @@ class CatalogSheet extends StatefulWidget {
   final String intro;
   final Color coverColor;
   final List<String> chapterTitles;
+  final List<BookTocEntry> toc;
   final int currentIndex;
+  final int currentOffset;
   final ReaderTheme theme;
 
   /// 书签列表（展示于「笔记」标签页）
@@ -141,6 +146,7 @@ class _CatalogSheetState extends State<CatalogSheet>
 
   /// 是否倒序展示（true 时列表从末章到首章）。
   bool _descending = false;
+  final Set<String> _expandedToc = <String>{};
 
   /// 笔记：本地可变副本（删除即时反映），筛选状态。
   late final List<Bookmark> _bookmarks = List<Bookmark>.of(widget.bookmarks);
@@ -154,11 +160,60 @@ class _CatalogSheetState extends State<CatalogSheet>
 
   int get _count => widget.chapterTitles.length;
 
+  List<(BookTocEntry, int)> _rows() {
+    final roots = widget.toc.isEmpty
+        ? <BookTocEntry>[
+            for (var i = 0; i < _count; i++)
+              BookTocEntry(
+                id: 'chapter-$i',
+                title: widget.chapterTitles[i],
+                chapterIndex: i,
+              ),
+          ]
+        : List<BookTocEntry>.of(widget.toc);
+    final orderedRoots = _descending ? roots.reversed.toList() : roots;
+    final result = <(BookTocEntry, int)>[];
+    void add(List<BookTocEntry> entries, int depth) {
+      for (final entry in entries) {
+        result.add((entry, depth));
+        // The reader catalogue intentionally mirrors the image reader's
+        // two-level layout: chapter -> subsection. Deeper source navigation
+        // entries are not shown as a third level.
+        if (depth == 0 && _expandedToc.contains(entry.id)) {
+          add(entry.children, depth + 1);
+        }
+      }
+    }
+
+    add(orderedRoots, 0);
+    return result;
+  }
+
+  BookTocEntry? _activeToc() {
+    if (widget.toc.isEmpty) return null;
+    BookTocEntry? best;
+    void visit(List<BookTocEntry> entries) {
+      for (final entry in entries) {
+        if (entry.chapterIndex < widget.currentIndex ||
+            entry.chapterIndex == widget.currentIndex &&
+                entry.charOffset <= widget.currentOffset) {
+          if (best == null ||
+              entry.chapterIndex > best!.chapterIndex ||
+              entry.chapterIndex == best!.chapterIndex &&
+                  entry.charOffset >= best!.charOffset) {
+            best = entry;
+          }
+        }
+        visit(entry.children);
+      }
+    }
+
+    visit(widget.toc);
+    return best;
+  }
+
   int _displayPos(int chapterIndex) =>
       _descending ? _count - 1 - chapterIndex : chapterIndex;
-
-  int _chapterAt(int displayPos) =>
-      _descending ? _count - 1 - displayPos : displayPos;
 
   double _offsetFor(int displayPos) =>
       (displayPos * _itemExtent - 200).clamp(0, double.infinity);
@@ -166,6 +221,19 @@ class _CatalogSheetState extends State<CatalogSheet>
   @override
   void initState() {
     super.initState();
+    void expandToCurrent(List<BookTocEntry> entries) {
+      for (final entry in entries) {
+        final contains = entry.chapterIndex < widget.currentIndex ||
+            entry.chapterIndex == widget.currentIndex &&
+                entry.charOffset <= widget.currentOffset;
+        if (contains && entry.children.isNotEmpty) {
+          _expandedToc.add(entry.id);
+          expandToCurrent(entry.children);
+        }
+      }
+    }
+
+    expandToCurrent(widget.toc);
     final double target = _offsetFor(_displayPos(widget.currentIndex));
     if (widget.scrollController == null) {
       _own = ScrollController(initialScrollOffset: target);
@@ -492,6 +560,8 @@ class _CatalogSheetState extends State<CatalogSheet>
   // ————————————————————— 目录 —————————————————————
 
   Widget _buildCatalog(ReaderLabels labels) {
+    final rows = _rows();
+    final active = _activeToc();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -528,44 +598,68 @@ class _CatalogSheetState extends State<CatalogSheet>
         Expanded(
           child: ListView.builder(
             controller: _listController,
-            itemCount: _count,
+            itemCount: rows.length,
             itemExtent: _itemExtent,
             itemBuilder: (BuildContext context, int pos) {
-              final int index = _chapterAt(pos);
-              final bool active = index == widget.currentIndex;
+              final (entry, depth) = rows[pos];
+              final int index = entry.chapterIndex;
+              final bool isActive = widget.toc.isEmpty
+                  ? index == widget.currentIndex
+                  : identical(entry, active);
               final bool locked = widget.isChapterLocked?.call(index) ?? false;
               return InkWell(
                 onTap: () => Navigator.of(context).pop(
-                  ReadingPosition(chapterIndex: index),
+                  ReadingPosition(
+                    chapterIndex: index,
+                    charOffset: entry.charOffset,
+                  ),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 22),
+                  padding: EdgeInsets.only(left: 22 + depth * 20, right: 22),
                   child: Row(
                     children: <Widget>[
                       Expanded(
                         child: Text(
-                          widget.chapterTitles[index],
+                          entry.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: _sans(
                             size: 15,
                             height: 1.4,
-                            weight: active ? FontWeight.w700 : FontWeight.w400,
-                            color: active
+                            weight:
+                                isActive ? FontWeight.w700 : FontWeight.w400,
+                            color: isActive
                                 ? _accent
                                 : _text.withValues(alpha: 0.85),
                           ),
                         ),
                       ),
-                      if (active)
+                      if (isActive)
                         Icon(Icons.play_arrow_rounded,
                             size: 18, color: _accent),
                       // 未解锁付费章：右侧显示锁 icon，解锁后不再显示。
                       if (locked)
                         Padding(
-                          padding: EdgeInsets.only(left: active ? 6 : 0),
+                          padding: EdgeInsets.only(left: isActive ? 6 : 0),
                           child:
                               Icon(Icons.lock_outline, size: 16, color: _sub),
+                        ),
+                      if (depth == 0 && entry.children.isNotEmpty)
+                        IconButton(
+                          icon: Icon(
+                            _expandedToc.contains(entry.id)
+                                ? Icons.expand_less
+                                : Icons.expand_more,
+                            size: 18,
+                          ),
+                          color: _sub,
+                          tooltip:
+                              _expandedToc.contains(entry.id) ? '折叠' : '展开',
+                          onPressed: () => setState(() {
+                            if (!_expandedToc.remove(entry.id)) {
+                              _expandedToc.add(entry.id);
+                            }
+                          }),
                         ),
                     ],
                   ),

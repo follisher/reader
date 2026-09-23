@@ -163,12 +163,12 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
       appBar: AppBar(
         title: const Text('我的书架'),
         actions: [
-          //第一版，暂时不加入外部导入
-          // IconButton(
-          //   tooltip: '导入图书',
-          //   onPressed: _busy ? null : _import,
-          //   icon: const Icon(Icons.add),
-          // ),
+          // 第一版，暂时不加入外部导入
+          IconButton(
+            tooltip: '导入图书',
+            onPressed: _busy ? null : _import,
+            icon: const Icon(Icons.add),
+          ),
         ],
       ),
       body: Column(

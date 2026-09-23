@@ -1,6 +1,24 @@
 import 'package:flutter/material.dart';
 
-/// 书籍清单：书籍元信息 + 目录（仅章节标题，轻量）。
+/// 目录条目，支持章节下的嵌套小节。
+@immutable
+class BookTocEntry {
+  const BookTocEntry({
+    required this.id,
+    required this.title,
+    required this.chapterIndex,
+    this.charOffset = 0,
+    this.children = const <BookTocEntry>[],
+  });
+
+  final String id;
+  final String title;
+  final int chapterIndex;
+  final int charOffset;
+  final List<BookTocEntry> children;
+}
+
+/// 书籍清单：书籍元信息与目录（正文按章懒加载）。
 ///
 /// 章节正文不在清单内，按需通过 [BookSource.loadChapterBody] 拉取。
 @immutable
@@ -12,7 +30,8 @@ class BookManifest {
     required this.intro,
     required this.coverColor,
     required this.chapterTitles,
-  });
+    List<BookTocEntry>? toc,
+  }) : toc = toc ?? const <BookTocEntry>[];
 
   final Object id;
   final String title;
@@ -20,6 +39,7 @@ class BookManifest {
   final String intro;
   final Color coverColor;
   final List<String> chapterTitles;
+  final List<BookTocEntry> toc;
 
   int get chapterCount => chapterTitles.length;
 }

@@ -110,6 +110,7 @@ class ReaderPageContent extends StatelessWidget {
     required this.progress,
     this.pageStartOffset = 0,
     this.leadingParagraphStart,
+    this.headingOffsets = const <int>{},
     this.chapterEnd,
     this.padding = kReaderPagePadding,
   });
@@ -131,6 +132,7 @@ class ReaderPageContent extends StatelessWidget {
 
   /// 页首延续段落的真实起始偏移（段评角标跨页统计用），见 [ReaderProse.leadingParagraphStart]。
   final int? leadingParagraphStart;
+  final Set<int> headingOffsets;
 
   /// 章末自定义组件（仅本章最后一页传入）：排在正文下方、页脚之上。
   /// 分页已为它预留高度，因此正文不会被它挤掉，见 `chapterEndReserve`。
@@ -167,6 +169,7 @@ class ReaderPageContent extends StatelessWidget {
                     chapterTitle: chapterTitle,
                     pageStartOffset: pageStartOffset,
                     leadingParagraphStart: leadingParagraphStart,
+                    headingOffsets: headingOffsets,
                   ),
                 ),
                 if (chapterEnd != null) chapterEnd!,
@@ -201,6 +204,7 @@ class ReaderProse extends StatefulWidget {
     this.chapterTitle = '',
     this.pageStartOffset = 0,
     this.leadingParagraphStart,
+    this.headingOffsets = const <int>{},
   });
 
   final ReaderPage page;
@@ -219,6 +223,7 @@ class ReaderProse extends StatefulWidget {
   /// 若本页以「上一页某段的延续块」开头，则为该段真实起始偏移；否则为 null（用本页起始）。
   /// 段评角标跨页时据此统计整段评论数，避免漏掉落在前一页那部分的评论。
   final int? leadingParagraphStart;
+  final Set<int> headingOffsets;
 
   @override
   State<ReaderProse> createState() => _ReaderProseState();
@@ -524,13 +529,23 @@ class _ReaderProseState extends State<ReaderProse> {
   }
 
   /// 与渲染完全一致的 [InlineSpan]：段首用等宽占位块承载缩进。
-  InlineSpan _spanFor(ReaderBlock block, double indentWidth) {
+  InlineSpan _spanFor(
+    ReaderBlock block,
+    double indentWidth, {
+    bool heading = false,
+  }) {
+    final style = heading
+        ? _config.textStyle.copyWith(
+            fontSize: _config.fontSize * 1.16,
+            fontWeight: FontWeight.w700,
+          )
+        : _config.textStyle;
     if (!block.isParagraphStart) {
-      return TextSpan(text: block.text, style: _config.textStyle);
+      return TextSpan(text: block.text, style: style);
     }
     final String body = block.text.replaceFirst(_leadingIndent, '');
     return TextSpan(
-      style: _config.textStyle,
+      style: style,
       children: <InlineSpan>[
         WidgetSpan(
           alignment: PlaceholderAlignment.middle,
@@ -1149,7 +1164,8 @@ class _ReaderProseState extends State<ReaderProse> {
   ) {
     // 基础文字 span（段首含缩进占位）；若该段尾需要角标，追加到末尾。
     // 角标不进入 _plainForSpan / 选区 / 划线的坐标系（它们只取正文），故不影响几何。
-    InlineSpan span = _spanFor(block, indentWidth);
+    final heading = widget.headingOffsets.contains(_blockChapterStart(i));
+    InlineSpan span = _spanFor(block, indentWidth, heading: heading);
     if (badge != null && segScope != null) {
       span = TextSpan(
         style: _config.textStyle,

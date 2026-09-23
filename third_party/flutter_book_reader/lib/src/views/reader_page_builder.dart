@@ -60,6 +60,7 @@ Widget buildReaderPage({
     progress: controller.progressFor(chapterIndex, pages, pageIndex),
     pageStartOffset: controller.startOffsetOfPageIn(pages, pageIndex),
     leadingParagraphStart: controller.leadingParagraphStartIn(pages, pageIndex),
+    headingOffsets: controller.subsectionOffsetsFor(chapterIndex),
     chapterEnd: chapterEnd,
   );
 

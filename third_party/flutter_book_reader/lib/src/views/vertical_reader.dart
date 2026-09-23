@@ -131,7 +131,8 @@ class _VerticalReaderState extends ReaderModeViewState<VerticalReader>
     final block = entry.block!;
     // ReaderProse clears its selection on a new page identity. Ordinary list
     // rebuilds (including overlay insertion) must retain the same paragraph.
-    if (previous != null && previous.single.text == block.text &&
+    if (previous != null &&
+        previous.single.text == block.text &&
         previous.single.isParagraphStart == block.isParagraphStart &&
         previous.single.isParagraphEnd == block.isParagraphEnd) {
       return previous;
@@ -308,6 +309,8 @@ class _VerticalReaderState extends ReaderModeViewState<VerticalReader>
                         chapterIndex: entry.chapter,
                         chapterTitle: controller.chapterTitleAt(entry.chapter),
                         pageStartOffset: entry.offset,
+                        headingOffsets:
+                            controller.subsectionOffsetsFor(entry.chapter),
                       ),
                     );
                   },
