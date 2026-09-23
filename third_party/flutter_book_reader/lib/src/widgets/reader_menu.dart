@@ -187,8 +187,22 @@ class _ReaderMenuState extends State<ReaderMenu> {
       top: widget.visible ? 0 : -180,
       left: 0,
       right: 0,
-      child: ColoredBox(
-        color: _t.paperColor,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: _t.paperColor,
+          border: Border(
+            bottom: BorderSide(color: _t.dividerColor, width: 0.8),
+          ),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: _t.textColor.withValues(
+                alpha: _t.isDark ? 0.18 : 0.08,
+              ),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
         child: Padding(
           padding: EdgeInsets.only(top: topInset),
           child: SizedBox(

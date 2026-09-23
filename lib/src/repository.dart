@@ -77,10 +77,10 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 5,
+        version: 6,
         onCreate: (db, _) async {
           await db.execute(
-            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER)',
+            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER)',
           );
           await db.execute(
             'CREATE TABLE settings (id INTEGER PRIMARY KEY, font_size REAL NOT NULL, dark INTEGER NOT NULL, options TEXT)',
@@ -88,6 +88,11 @@ class LocalBookshelfRepository implements BookshelfRepository {
           await _createNotesTable(db);
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 6) {
+            await db.execute(
+              'ALTER TABLE books ADD COLUMN last_read_at INTEGER',
+            );
+          }
           if (oldVersion < 5) await _createNotesTable(db);
           if (oldVersion < 4) {
             await db.execute(
@@ -256,6 +261,9 @@ class LocalBookshelfRepository implements BookshelfRepository {
         : p.join(directory.path, row['cover_file_name'] as String),
     cacheReady: row['cache_ready'] == 1,
     addedAt: DateTime.fromMillisecondsSinceEpoch(row['added_at'] as int),
+    lastReadAt: row['last_read_at'] == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(row['last_read_at'] as int),
     location: ReadingLocation(
       chapter: row['chapter'] as int,
       block: row['block'] as int,
@@ -275,7 +283,8 @@ class LocalBookshelfRepository implements BookshelfRepository {
           await _cachePendingCovers();
           final rows = await _db.query(
             'books',
-            orderBy: 'added_at DESC, title',
+            orderBy:
+                'last_read_at IS NULL, last_read_at DESC, added_at DESC, title',
           );
           if (!controller.isClosed) controller.add(rows.map(_book).toList());
         } catch (e, st) {
@@ -380,6 +389,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
         'cover_checked': 1,
         'cache_ready': cacheReady ? 1 : 0,
         'added_at': DateTime.now().millisecondsSinceEpoch,
+        'last_read_at': null,
         'chapter': 0,
         'block': 0,
         'progress': 0.0,
@@ -447,6 +457,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
             'block': location.block,
             'char_offset': location.charOffset,
             'progress': location.progress.clamp(0, 1),
+            'last_read_at': DateTime.now().millisecondsSinceEpoch,
           },
           where: 'id = ?',
           whereArgs: [bookId],

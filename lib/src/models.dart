@@ -79,6 +79,7 @@ class Book {
     this.coverPath,
     this.cacheReady = false,
     this.location = const ReadingLocation(),
+    this.lastReadAt,
   });
   final String id, title, author, fileName;
   final BookFormat format;
@@ -87,6 +88,12 @@ class Book {
   final String? coverPath;
   final bool cacheReady;
   final ReadingLocation location;
+
+  /// The last time the reader persisted a position for this book.
+  final DateTime? lastReadAt;
+
+  /// Alias matching the user-facing notion of recent reading time.
+  DateTime? get recentReadAt => lastReadAt;
 }
 
 enum BookChapterKind { content, cover, titlePage, copyright, backCover }

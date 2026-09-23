@@ -164,11 +164,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
         title: const Text('我的书架'),
         actions: [
           // 第一版，暂时不加入外部导入
-          IconButton(
-            tooltip: '导入图书',
-            onPressed: _busy ? null : _import,
-            icon: const Icon(Icons.add),
-          ),
+          // IconButton(
+          //   tooltip: '导入图书',
+          //   onPressed: _busy ? null : _import,
+          //   icon: const Icon(Icons.add),
+          // ),
         ],
       ),
       body: Column(
@@ -217,13 +217,26 @@ class _BookshelfViewState extends ConsumerState<BookshelfView>
                 ),
               ),
               data: (all) {
-                final visible = all
-                    .where(
-                      (b) => '${b.title} ${b.author}'.toLowerCase().contains(
-                        _query,
-                      ),
-                    )
-                    .toList();
+                final visible =
+                    all
+                        .where(
+                          (b) => '${b.title} ${b.author}'
+                              .toLowerCase()
+                              .contains(_query),
+                        )
+                        .toList()
+                      ..sort((a, b) {
+                        final aRead = a.lastReadAt;
+                        final bRead = b.lastReadAt;
+                        if (aRead == null && bRead != null) return 1;
+                        if (aRead != null && bRead == null) return -1;
+                        if (aRead != null && bRead != null) {
+                          final recent = bRead.compareTo(aRead);
+                          if (recent != 0) return recent;
+                        }
+                        final added = b.addedAt.compareTo(a.addedAt);
+                        return added != 0 ? added : a.title.compareTo(b.title);
+                      });
                 if (visible.isEmpty) {
                   return Center(
                     child: Padding(
