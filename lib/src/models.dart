@@ -67,6 +67,14 @@ class ReaderSettings {
   };
 }
 
+class BookTag {
+  const BookTag({required this.id, required this.name, this.color});
+
+  final int id;
+  final String name;
+  final String? color;
+}
+
 class Book {
   const Book({
     required this.id,
@@ -80,6 +88,7 @@ class Book {
     this.cacheReady = false,
     this.location = const ReadingLocation(),
     this.lastReadAt,
+    this.tags = const [],
   });
   final String id, title, author, fileName;
   final BookFormat format;
@@ -91,6 +100,7 @@ class Book {
 
   /// The last time the reader persisted a position for this book.
   final DateTime? lastReadAt;
+  final List<BookTag> tags;
 
   /// Alias matching the user-facing notion of recent reading time.
   DateTime? get recentReadAt => lastReadAt;

@@ -975,10 +975,10 @@ class _CatalogSheetState extends State<CatalogSheet>
           child: Row(
             children: <Widget>[
               const Icon(Icons.delete_outline,
-                  size: 17, color: Color(0xFFD9534F)),
+                  size: 17, color: Color(0xFF757575)),
               const SizedBox(width: 10),
               Text(labels.noteDelete,
-                  style: _sans(size: 14, color: const Color(0xFFD9534F))),
+                  style: _sans(size: 14, color: const Color(0xFF757575))),
             ],
           ),
         ),

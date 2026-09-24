@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 
 /// 阅读主题：纸张背景色 + 正文文字色 + 面板/强调等派生色。
 ///
-/// 配色参考「阅读器菜单」设计稿的 6 套主题（白 / 灰 / 米 / 青 / 蓝 / 夜）。
+/// 6 套主题：黑白灰基础方案，外加暖色纸张、护眼绿色和夜间模式。
 class ReaderTheme {
   const ReaderTheme({
     required this.alias,
     required this.name,
     required this.paperColor,
     required this.textColor,
-    this.accentColor = const Color(0xFFB3572F),
+    this.accentColor = const Color(0xFF000000),
     Color? panelColor,
     Color? segActiveColor,
     Color? selectionColor,
@@ -102,57 +102,58 @@ class ReaderTheme {
     textColor: Color(0xFF2B2B2B),
     panelColor: Color(0xFFF7F6F4),
     segActiveColor: Color(0xFFFFFFFF),
-    selectionColor: Color(0xFFF6E6C4),
+    selectionColor: Color(0xFFE0E0E0),
   );
 
   static const ReaderTheme grey = ReaderTheme(
     alias: 'grey',
     name: '灰',
-    paperColor: Color(0xFFE8E6E0),
-    textColor: Color(0xFF33322E),
-    panelColor: Color(0xFFF0EEE8),
-    segActiveColor: Color(0xFFFAF9F5),
-    selectionColor: Color(0xFFDCD2BB),
+    paperColor: Color(0xFFE8E8E8),
+    textColor: Color(0xFF222222),
+    panelColor: Color(0xFFF0F0F0),
+    segActiveColor: Color(0xFFFAFAFA),
+    selectionColor: Color(0xFFD0D0D0),
   );
 
   static const ReaderTheme yellow = ReaderTheme(
     alias: 'yellow',
-    name: '米',
-    paperColor: Color(0xFFF2E9DC),
-    textColor: Color(0xFF3A322B),
-    panelColor: Color(0xFFEFE6D5),
-    segActiveColor: Color(0xFFFDFAF3),
-    selectionColor: Color(0xFFE7D3A8),
+    name: '暖纸',
+    paperColor: Color(0xFFF4EBDD),
+    textColor: Color(0xFF2F2A24),
+    panelColor: Color(0xFFEEE3D2),
+    segActiveColor: Color(0xFFFFF9EF),
+    selectionColor: Color(0xFFE8D4AD),
   );
 
   static const ReaderTheme green = ReaderTheme(
     alias: 'green',
-    name: '青',
-    paperColor: Color(0xFFDDE9E2),
-    textColor: Color(0xFF2F3A34),
-    panelColor: Color(0xFFD7E4DC),
-    segActiveColor: Color(0xFFF1F7F4),
-    selectionColor: Color(0xFFBFCEB4),
+    name: '护眼绿',
+    paperColor: Color(0xFFE1EAE3),
+    textColor: Color(0xFF27332B),
+    panelColor: Color(0xFFD6E2D9),
+    segActiveColor: Color(0xFFF3F8F4),
+    selectionColor: Color(0xFFBFD1C3),
   );
 
   static const ReaderTheme blue = ReaderTheme(
     alias: 'blue',
     name: '蓝',
-    paperColor: Color(0xFFDDE6F2),
-    textColor: Color(0xFF2D3540),
-    panelColor: Color(0xFFD5E1F0),
-    segActiveColor: Color(0xFFF0F4FB),
-    selectionColor: Color(0xFFAEBACB),
+    paperColor: Color(0xFFE1E1E1),
+    textColor: Color(0xFF222222),
+    panelColor: Color(0xFFD7D7D7),
+    segActiveColor: Color(0xFFF0F0F0),
+    selectionColor: Color(0xFFBDBDBD),
   );
 
   static const ReaderTheme night = ReaderTheme(
     alias: 'night',
     name: '夜',
-    paperColor: Color(0xFF191712),
-    textColor: Color(0xFFB5AB9C),
-    panelColor: Color(0xFF221F19),
-    segActiveColor: Color(0xFF3A352A),
-    selectionColor: Color(0xFF4C3A28),
+    paperColor: Color(0xFF121212),
+    textColor: Color(0xFFE0E0E0),
+    panelColor: Color(0xFF1F1F1F),
+    segActiveColor: Color(0xFF303030),
+    selectionColor: Color(0xFF4A4A4A),
+    accentColor: Color(0xFFF5F5F5),
   );
 
   static const List<ReaderTheme> presets = <ReaderTheme>[

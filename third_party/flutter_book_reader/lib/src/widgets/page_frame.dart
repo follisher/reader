@@ -1028,7 +1028,7 @@ class _ReaderProseState extends State<ReaderProse> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
         decoration: BoxDecoration(
-          color: const Color(0xFF2C2A28),
+          color: const Color(0xFF2B2B2B),
           borderRadius: BorderRadius.circular(14),
           boxShadow: <BoxShadow>[
             BoxShadow(

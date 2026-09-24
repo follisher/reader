@@ -68,7 +68,7 @@ class RepositoryBookSource extends engine.BookSource {
       title: data.title,
       author: data.author,
       intro: '',
-      coverColor: const Color(0xFF728577),
+      coverColor: const Color(0xFFA6A6A6),
       chapterTitles: data.chapters.map((c) => c.title).toList(),
       toc: toc,
     );

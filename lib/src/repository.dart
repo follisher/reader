@@ -39,6 +39,7 @@ abstract interface class BookshelfRepository {
   Future<void> removeBook(String bookId);
   Future<ReaderSettings> loadSettings();
   Future<void> saveSettings(ReaderSettings settings);
+  Future<void> syncCatalogTags(String bookId, Map<String, String?> tags);
 }
 
 class BookImportResult {
@@ -77,7 +78,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 6,
+        version: 7,
         onCreate: (db, _) async {
           await db.execute(
             'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER)',
@@ -86,8 +87,10 @@ class LocalBookshelfRepository implements BookshelfRepository {
             'CREATE TABLE settings (id INTEGER PRIMARY KEY, font_size REAL NOT NULL, dark INTEGER NOT NULL, options TEXT)',
           );
           await _createNotesTable(db);
+          await _createTagsTables(db);
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 7) await _createTagsTables(db);
           if (oldVersion < 6) {
             await db.execute(
               'ALTER TABLE books ADD COLUMN last_read_at INTEGER',
@@ -130,6 +133,20 @@ class LocalBookshelfRepository implements BookshelfRepository {
     'note_key TEXT NOT NULL, payload TEXT NOT NULL, '
     'PRIMARY KEY (book_id, kind, note_key))',
   );
+
+  static Future<void> _createTagsTables(Database db) async {
+    await db.execute(
+      'CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+      'name TEXT NOT NULL UNIQUE, color TEXT, created_at INTEGER NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TABLE book_tags (book_id TEXT NOT NULL, tag_id INTEGER NOT NULL, '
+      'is_catalog INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, '
+      'PRIMARY KEY (book_id, tag_id), '
+      'FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE, '
+      'FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE)',
+    );
+  }
 
   @override
   Future<List<Map<String, dynamic>>> loadNotes(
@@ -272,6 +289,43 @@ class LocalBookshelfRepository implements BookshelfRepository {
     ),
   );
 
+  Future<List<Book>> _booksWithTags(List<Map<String, Object?>> rows) async {
+    final result = <Book>[];
+    for (final row in rows) {
+      final book = _book(row);
+      final tagRows = await _db.rawQuery(
+        'SELECT tags.id, tags.name, tags.color FROM tags '
+        'JOIN book_tags ON book_tags.tag_id = tags.id '
+        'WHERE book_tags.book_id = ? ORDER BY tags.name',
+        [book.id],
+      );
+      result.add(
+        Book(
+          id: book.id,
+          title: book.title,
+          author: book.author,
+          format: book.format,
+          source: book.source,
+          fileName: book.fileName,
+          addedAt: book.addedAt,
+          coverPath: book.coverPath,
+          cacheReady: book.cacheReady,
+          location: book.location,
+          lastReadAt: book.lastReadAt,
+          tags: [
+            for (final tag in tagRows)
+              BookTag(
+                id: tag['id'] as int,
+                name: tag['name'] as String,
+                color: tag['color'] as String?,
+              ),
+          ],
+        ),
+      );
+    }
+    return result;
+  }
+
   @override
   Stream<List<Book>> watchBooks() {
     late StreamController<List<Book>> controller;
@@ -286,7 +340,9 @@ class LocalBookshelfRepository implements BookshelfRepository {
             orderBy:
                 'last_read_at IS NULL, last_read_at DESC, added_at DESC, title',
           );
-          if (!controller.isClosed) controller.add(rows.map(_book).toList());
+          if (!controller.isClosed) {
+            controller.add(await _booksWithTags(rows));
+          }
         } catch (e, st) {
           if (!controller.isClosed) controller.addError(e, st);
         }
@@ -487,6 +543,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
         where: 'book_id = ?',
         whereArgs: [bookId],
       );
+      await txn.delete('book_tags', where: 'book_id = ?', whereArgs: [bookId]);
       await txn.delete('books', where: 'id = ?', whereArgs: [bookId]);
     });
     _changes.add(null);
@@ -522,6 +579,62 @@ class LocalBookshelfRepository implements BookshelfRepository {
       'options': jsonEncode(settings.toJson()),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   });
+
+  @override
+  Future<void> syncCatalogTags(String bookId, Map<String, String?> tags) =>
+      _serial(() async {
+        await _db.transaction((txn) async {
+          final desired = <String, String?>{
+            for (final entry in tags.entries)
+              if (entry.key.trim().isNotEmpty) entry.key.trim(): entry.value,
+          };
+          final desiredIds = <int>[];
+          for (final entry in desired.entries) {
+            final name = entry.key;
+            await txn.insert('tags', {
+              'name': name,
+              'color': entry.value,
+              'created_at': DateTime.now().millisecondsSinceEpoch,
+            }, conflictAlgorithm: ConflictAlgorithm.ignore);
+            final row = (await txn.query(
+              'tags',
+              where: 'name = ?',
+              whereArgs: [name],
+            )).single;
+            final tagId = row['id'] as int;
+            desiredIds.add(tagId);
+            await txn.update(
+              'tags',
+              {'color': entry.value},
+              where: 'id = ?',
+              whereArgs: [tagId],
+            );
+            await txn.insert('book_tags', {
+              'book_id': bookId,
+              'tag_id': tagId,
+              'is_catalog': 1,
+              'created_at': DateTime.now().millisecondsSinceEpoch,
+            }, conflictAlgorithm: ConflictAlgorithm.replace);
+          }
+          final existing = await txn.query(
+            'book_tags',
+            columns: ['tag_id'],
+            where: 'book_id = ? AND is_catalog = 1',
+            whereArgs: [bookId],
+          );
+          for (final row in existing) {
+            final tagId = row['tag_id'] as int;
+            if (!desiredIds.contains(tagId)) {
+              await txn.delete(
+                'book_tags',
+                where: 'book_id = ? AND tag_id = ? AND is_catalog = 1',
+                whereArgs: [bookId, tagId],
+              );
+            }
+          }
+        });
+        _changes.add(null);
+      });
 
   Future<void> _cachePendingCovers() => _serial(() async {
     final rows = await _db.query(

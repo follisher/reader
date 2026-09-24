@@ -88,6 +88,12 @@ class FakeRepository implements BookshelfRepository {
   Future<void> saveSettings(ReaderSettings value) async {
     settings = value;
   }
+
+  @override
+  Future<void> syncCatalogTags(
+    String bookId,
+    Map<String, String?> tags,
+  ) async {}
 }
 
 final boundary = GlobalKey();

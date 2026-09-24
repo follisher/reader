@@ -79,6 +79,27 @@ await repository.importBytes(
 
 `BookSource` 已预留 `builtIn`、`imported` 和 `downloaded`。模块当前不发网络请求，也不保存账号或授权状态。
 
+### 内置书籍标签
+
+演示应用使用 `example/assets/catalog.json` 管理内置书籍的默认标签。配置文件只负责声明资源和标签，应用启动时会将关系同步到本地 SQLite；用户界面目前只提供标签筛选，不提供标签编辑。
+
+```json
+{
+  "version": 1,
+  "tags": {
+    "小说": { "color": "#D97706" }
+  },
+  "books": [
+    {
+      "file": "百年孤独.epub",
+      "tags": ["小说"]
+    }
+  ]
+}
+```
+
+`file` 相对于 `assets/books/`，标签名称必须出现在对应书籍的 `tags` 数组中。修改清单后重新构建应用即可同步默认关系；阅读进度和笔记不会受到影响。
+
 ## 文件与安全边界
 
 单个图书限制为 50 MB；EPUB 最多 10,000 个资源，声明的解压内容限制为 150 MB。解析在后台 isolate 中进行。EPUB 会移除脚本、嵌入式框架、外部链接与外部资源引用，不执行书内代码。
