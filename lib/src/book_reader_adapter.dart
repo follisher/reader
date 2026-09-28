@@ -1,4 +1,7 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:html/parser.dart' as html;
 
@@ -31,7 +34,7 @@ class RepositoryBookSource extends engine.BookSource {
     final chapterTexts = <int, Future<TextChapter>>{};
     Future<TextChapter> textFor(int index) => chapterTexts.putIfAbsent(
       index,
-      () async => TextChapter.fromChapter(await data.readChapter(index)),
+      () async => normalizeChapter(await data.readChapter(index)),
     );
     Future<engine.BookTocEntry?> mapEntry(BookTocEntry entry) async {
       final chapter = entry.chapter;
@@ -48,7 +51,7 @@ class RepositoryBookSource extends engine.BookSource {
           : await textFor(chapter);
       return engine.BookTocEntry(
         id: entry.id,
-        title:entry.title,
+        title: entry.title,
         chapterIndex: chapter,
         charOffset: text == null
             ? 0
@@ -83,7 +86,7 @@ class RepositoryBookSource extends engine.BookSource {
     return _pending.putIfAbsent(index, () async {
       try {
         final data = await content();
-        final result = TextChapter.fromChapter(await data.readChapter(index));
+        final result = await normalizeChapter(await data.readChapter(index));
         _chapters[index] = result;
         while (_chapters.length > 8) {
           _chapters.remove(_chapters.keys.first);
@@ -99,6 +102,21 @@ class RepositoryBookSource extends engine.BookSource {
   Future<String> loadChapterBody(int chapterIndex) async =>
       (await textChapter(chapterIndex)).body;
 }
+
+Future<TextChapter> normalizeChapter(BookChapter chapter) async {
+  // HTML parsing is CPU-heavy for long chapters. Keep it off the UI isolate
+  // so a prefetched chapter cannot stall the active scroll animation.
+  // Widget tests use a fake clock and cannot wait for an isolate from
+  // pumpAndSettle. On-device debug/profile/release all use the background path.
+  if (chapter.blocks.length < 16 ||
+      (!kIsWeb && Platform.environment['FLUTTER_TEST'] == 'true')) {
+    return TextChapter.fromChapter(chapter);
+  }
+  return compute(_normalizeChapterInIsolate, chapter);
+}
+
+TextChapter _normalizeChapterInIsolate(BookChapter chapter) =>
+    TextChapter.fromChapter(chapter);
 
 /// Canonical offsets omit newlines and reader-owned indentation. The engine's
 /// offsets include indentation, so conversion is required when saving/resuming.

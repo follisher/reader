@@ -152,7 +152,14 @@ class ReaderPageContent extends StatelessWidget {
           ),
           if (isChapterHead) ...<Widget>[
             const SizedBox(height: kReaderHeadingGapTop),
-            Text(chapterTitle, style: config.headingStyle),
+            Align(
+              alignment: Alignment.center,
+              child: Text(
+                chapterTitle,
+                textAlign: TextAlign.center,
+                style: config.headingStyle,
+              ),
+            ),
             const SizedBox(height: kReaderHeadingGapBottom),
           ],
           Expanded(
@@ -263,8 +270,7 @@ class _ReaderProseState extends State<ReaderProse> {
   Object? _badgeCacheKey;
 
   /// 缩进占位宽度缓存：仅取决于缩进串 / 字体 / 字号 / 系统缩放，页内恒定。
-  double _cachedIndentWidth = 0;
-  String? _indentWidthKey;
+  static final _indentWidths = <(String, TextStyle, TextScaler), double>{};
 
   @override
   void initState() {
@@ -519,13 +525,17 @@ class _ReaderProseState extends State<ReaderProse> {
   /// 缩进宽度（缓存）：仅取决于缩进串 / 字体 / 字号 / 系统缩放，页内恒定，
   /// 无需每次 build 都 `TextPainter.layout` 一次。
   double _indentWidth(TextScaler scaler) {
-    final String key = '${_config.indent}|${_config.fontFamily}'
-        '|${_config.fontSize}|${scaler.scale(1000).round()}';
-    if (_indentWidthKey == key) return _cachedIndentWidth;
-    _cachedIndentWidth =
-        _measureIndent(_config.indent, _config.textStyle, scaler);
-    _indentWidthKey = key;
-    return _cachedIndentWidth;
+    final key = (_config.indent, _config.textStyle, scaler);
+    final cached = _indentWidths[key];
+    if (cached != null) return cached;
+    final width = _measureIndent(key.$1, key.$2, scaler);
+    // Share measurements across paragraphs entering the viewport during a
+    // fling. Bound the cache so changing books/themes cannot grow it forever.
+    if (_indentWidths.length >= 16) {
+      _indentWidths.remove(_indentWidths.keys.first);
+    }
+    _indentWidths[key] = width;
+    return width;
   }
 
   /// 与渲染完全一致的 [InlineSpan]：段首用等宽占位块承载缩进。

@@ -25,7 +25,7 @@ class ReaderSettings {
   const ReaderSettings({
     this.fontSize = 20,
     this.dark = false,
-    this.theme = 'yellow',
+    this.theme = 'white',
     this.flipMode = 'scrollVertical',
     this.lineHeight = 1.8,
     this.paragraphSpacing = 8,

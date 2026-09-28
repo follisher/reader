@@ -90,7 +90,7 @@ class ReaderConfig extends ChangeNotifier {
   String? get fontFamily => _fontFamily;
 
   // —— 主题 ——
-  ReaderTheme _theme = ReaderTheme.yellow;
+  ReaderTheme _theme = ReaderTheme.white;
   ReaderTheme get theme => _theme;
 
   // —— 翻页方式 ——

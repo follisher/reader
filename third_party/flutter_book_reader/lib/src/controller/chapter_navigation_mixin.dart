@@ -1,11 +1,109 @@
 import '../paginator.dart';
+import '../source/book_source.dart';
 import 'chapter_content_mixin.dart';
 import 'pagination_mixin.dart';
 import 'reader_controller_base.dart';
+import 'reader_seek_preview.dart';
 
 /// 翻页与切章能力（横向/无动画模式使用）。
 mixin ChapterNavigationMixin
     on ReaderControllerBase, ChapterContentMixin, PaginationMixin {
+  static final RegExp _numberedHeading = RegExp(
+    r'^第\s*[0-9零一二三四五六七八九十百千万两〇○]+\s*[章节回卷部篇]\s*[：:、.．—-]*\s*',
+  );
+
+  String _previewTitle(String title) {
+    final String content =
+        title.trim().replaceFirst(_numberedHeading, '').trim();
+    return content.isEmpty ? ' ' : content;
+  }
+
+  ReaderSeekPreview previewForProgress(double progress) {
+    final double normalized = progress.clamp(0.0, 1.0);
+    final double scaled = normalized * chapterCount;
+    final int targetChapter = normalized >= 1
+        ? chapterCount - 1
+        : scaled.floor().clamp(0, chapterCount - 1);
+    final double chapterProgress =
+        normalized >= 1 ? 1 : (scaled - targetChapter).clamp(0.0, 1.0);
+
+    final List<int> knownPageCounts = <int>[];
+    int? targetLength;
+    for (int chapter = 0; chapter < chapterCount; chapter++) {
+      final String? body = bodyOf(chapter);
+      if (body == null) continue;
+      final List<ReaderPage>? chapterPages = pagesFor(chapter);
+      if (chapterPages == null || chapterPages.isEmpty) continue;
+      knownPageCounts.add(chapterPages.length);
+      if (chapter == targetChapter) {
+        targetLength = chapterBlocks(body).fold<int>(
+          0,
+          (int length, ReaderBlock block) => length + block.length,
+        );
+      }
+    }
+    final int averagePageCount = knownPageCounts.isEmpty
+        ? (pages.isEmpty ? 1 : pages.length)
+        : (knownPageCounts.reduce((int a, int b) => a + b) /
+                knownPageCounts.length)
+            .round()
+            .clamp(1, 1 << 30);
+    final int totalPages = (averagePageCount * chapterCount).clamp(
+      1,
+      1 << 30,
+    );
+    final int page =
+        normalized >= 1 ? totalPages : (normalized * totalPages).floor() + 1;
+    final int targetOffset =
+        targetLength == null ? 0 : (targetLength * chapterProgress).floor();
+
+    String title = chapterTitleAt(targetChapter);
+    BookTocEntry? subsection;
+    void visit(List<BookTocEntry> entries, int depth) {
+      for (final BookTocEntry entry in entries) {
+        if (depth > 0 &&
+            entry.chapterIndex == targetChapter &&
+            entry.charOffset <= targetOffset &&
+            (subsection == null ||
+                entry.charOffset >= subsection!.charOffset)) {
+          subsection = entry;
+        }
+        visit(entry.children, depth + 1);
+      }
+    }
+
+    if (targetLength != null) visit(manifest.toc, 0);
+    if (subsection != null) title = subsection!.title;
+    return ReaderSeekPreview(
+      page: page,
+      totalPages: totalPages,
+      title: _previewTitle(title),
+    );
+  }
+
+  /// 按全书进度定位，并保留目标章节内的相对阅读位置。
+  Future<void> seekToProgress(double progress) async {
+    final double normalized = progress.clamp(0.0, 1.0);
+    final double scaled = normalized * chapterCount;
+    final int targetChapter = normalized >= 1
+        ? chapterCount - 1
+        : scaled.floor().clamp(0, chapterCount - 1);
+    final double chapterProgress =
+        normalized >= 1 ? 1 : (scaled - targetChapter).clamp(0.0, 1.0);
+
+    await ensureLoaded(targetChapter);
+    final String? body = bodyOf(targetChapter);
+    if (body == null) {
+      loadChapter(targetChapter);
+      return;
+    }
+    final int chapterLength = chapterBlocks(
+      body,
+    ).fold<int>(0, (int length, ReaderBlock block) => length + block.length);
+    final int targetOffset = (chapterLength * chapterProgress).floor();
+    loadChapter(targetChapter, charOffset: targetOffset);
+  }
+
   /// 加载某章。[atEnd] 为 true 时定位到该章最后一页（向前翻入）；
   /// [charOffset] 用于跳转到章内指定字符偏移（如书签），布局时据此定位到对应页。
   /// 返回横向 PageView 应使用的初始页索引（含 leading 偏移）。

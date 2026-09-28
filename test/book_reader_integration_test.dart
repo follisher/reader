@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
+import 'package:flutter_book_reader/src/controller/reading_controller.dart';
+import 'package:flutter_book_reader/src/views/vertical_reader.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/reader.dart';
 import 'package:reader/src/book_reader_adapter.dart';
@@ -43,6 +46,212 @@ class LazyRepository extends FakeRepository {
 }
 
 void main() {
+  test('first-use reader defaults are white and medium speed', () {
+    expect(const ReaderSettings().theme, 'white');
+    final config = engine.ReaderConfig();
+    expect(config.theme.alias, 'white');
+    expect(
+      engine.BookReaderController().autoTurnInterval,
+      const Duration(milliseconds: 32500),
+    );
+    config.dispose();
+  });
+
+  test(
+    'fresh database uses the white theme without changing legacy rows',
+    () async {
+      sqfliteFfiInit();
+      final dir = await Directory.systemTemp.createTemp('reader-defaults-');
+      final repo = await LocalBookshelfRepository.create(
+        directory: dir,
+        factory: databaseFactoryFfi,
+      );
+      try {
+        expect((await repo.loadSettings()).theme, 'white');
+      } finally {
+        await repo.close();
+        await dir.delete(recursive: true);
+      }
+    },
+  );
+
+  testWidgets('loading an earlier chapter keeps the active drag stable', (
+    tester,
+  ) async {
+    final repo = LazyRepository();
+    final source = RepositoryBookSource(repo, book);
+    final config = engine.ReaderConfig();
+    final controller = ReadingController(
+      source: source,
+      manifest: await source.loadManifest(),
+      config: config,
+      startChapter: 10,
+    );
+    await tester.runAsync(() => controller.ensureLoaded(10));
+    var scrollStarts = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AnimatedBuilder(
+            animation: controller,
+            builder: (context, _) =>
+                NotificationListener<ScrollStartNotification>(
+                  onNotification: (_) {
+                    scrollStarts++;
+                    return false;
+                  },
+                  child: VerticalReader(
+                    controller: controller,
+                    onTapToggleMenu: () {},
+                  ),
+                ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final listFinder = find.byType(ScrollablePositionedList);
+    final gesture = await tester.startGesture(tester.getCenter(listFinder));
+    await gesture.moveBy(const Offset(0, -100));
+    await tester.pump();
+    final count = tester.widget<ScrollablePositionedList>(listFinder).itemCount;
+    final paragraph = find
+        .textContaining('第 10 章段落 1', findRichText: true)
+        .first;
+    final before = tester.getRect(paragraph);
+    await tester.runAsync(() => controller.ensureLoaded(0));
+    await tester.pump();
+    expect(
+      tester.widget<ScrollablePositionedList>(listFinder).itemCount,
+      count,
+    );
+    expect(tester.getRect(paragraph), before);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(controller.chapterIndex, 10);
+    expect(tester.getRect(paragraph).top, closeTo(before.top, 1));
+    var notifications = 0;
+    void countNotification() => notifications++;
+    controller.addListener(countNotification);
+    final offsetBeforeFling = controller.charOffset;
+    await tester.fling(listFinder, const Offset(0, -450), 2500);
+    var lastOffset = controller.charOffset;
+    var anchorChanges = 0;
+    for (var frame = 0; frame < 20; frame++) {
+      if (frame == 3) {
+        // A prefetch completion must not be mistaken for an external seek.
+        await tester.runAsync(() => controller.ensureLoaded(2));
+      }
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(controller.charOffset, greaterThanOrEqualTo(lastOffset));
+      if (controller.charOffset != lastOffset) anchorChanges++;
+      lastOffset = controller.charOffset;
+    }
+    expect(anchorChanges, lessThanOrEqualTo(6));
+    await tester.pumpAndSettle();
+    expect(controller.charOffset, greaterThan(offsetBeforeFling));
+    expect(notifications, lessThan(5));
+    controller.removeListener(countNotification);
+
+    // Reverse direction without lifting the finger while a chapter loads.
+    // The underlying list must keep its indices until the gesture and the
+    // subsequent ballistic motion are both finished.
+    final countBeforeReverse = tester
+        .widget<ScrollablePositionedList>(listFinder)
+        .itemCount;
+    final reverse = await tester.startGesture(tester.getCenter(listFinder));
+    await reverse.moveBy(const Offset(0, -140));
+    await tester.pump();
+    await tester.runAsync(() => controller.ensureLoaded(1));
+    await tester.pump();
+    await reverse.moveBy(const Offset(0, 110));
+    await tester.pump();
+    expect(
+      tester.widget<ScrollablePositionedList>(listFinder).itemCount,
+      countBeforeReverse,
+    );
+    await reverse.up();
+    await tester.pump(const Duration(milliseconds: 16));
+
+    // A fresh touch must invalidate the prior fling's queued end callback.
+    await tester.fling(listFinder, const Offset(0, -500), 3200);
+    await tester.pump(const Duration(milliseconds: 16));
+    final interrupt = await tester.startGesture(tester.getCenter(listFinder));
+    await interrupt.moveBy(const Offset(0, 90));
+    await tester.pump();
+    expect(
+      tester.widget<ScrollablePositionedList>(listFinder).itemCount,
+      countBeforeReverse,
+    );
+    await interrupt.up();
+    await tester.pump(const Duration(milliseconds: 220));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<ScrollablePositionedList>(listFinder).itemCount,
+      greaterThan(countBeforeReverse),
+    );
+
+    scrollStarts = 0;
+    ItemPosition firstVisible() => tester
+        .widget<ScrollablePositionedList>(listFinder)
+        .itemPositionsNotifier!
+        .itemPositions
+        .value
+        .where(
+          (position) =>
+              position.itemTrailingEdge > 0 && position.itemLeadingEdge < 1,
+        )
+        .reduce((a, b) => a.index < b.index ? a : b);
+    final beforeAuto = firstVisible();
+    controller.setAutoTurnInterval(const Duration(seconds: 1));
+    controller.setAutoTurning(true);
+    for (var frame = 0; frame < 35; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      if (frame == 5) {
+        final countBeforeLookahead = tester
+            .widget<ScrollablePositionedList>(listFinder)
+            .itemCount;
+        await tester.runAsync(() => controller.ensureLoaded(13));
+        await tester.pump();
+        expect(
+          tester.widget<ScrollablePositionedList>(listFinder).itemCount,
+          greaterThan(countBeforeLookahead),
+        );
+      }
+    }
+    final afterAuto = firstVisible();
+    expect(
+      afterAuto.index > beforeAuto.index ||
+          afterAuto.itemLeadingEdge < beforeAuto.itemLeadingEdge - .01,
+      isTrue,
+    );
+    for (var frame = 0; frame < 100; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    // Even at the fastest speed there should be no 1-second animation seam.
+    expect(scrollStarts, lessThanOrEqualTo(1));
+    controller.setAutoTurning(false);
+    await tester.pump(const Duration(milliseconds: 220));
+    await tester.pumpAndSettle();
+
+    // The speed-slider's fastest setting should not restart the scroll every
+    // three seconds; that small seam is conspicuous during slow reading.
+    controller.setAutoTurnInterval(const Duration(seconds: 15));
+    scrollStarts = 0;
+    controller.setAutoTurning(true);
+    for (var frame = 0; frame < 225; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(scrollStarts, lessThanOrEqualTo(1));
+    controller.setAutoTurning(false);
+    await tester.pump(const Duration(milliseconds: 220));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+    config.dispose();
+  });
+
   setUpAll(() async {
     const fontPath = String.fromEnvironment('READER_PREVIEW_FONT');
     if (fontPath.isEmpty) return;
@@ -113,6 +322,7 @@ void main() {
         factory: databaseFactoryFfi,
       );
       try {
+        expect((await repo.loadSettings()).theme, 'yellow');
         expect((await repo.loadSettings()).dark, isTrue);
         final imported = await repo.importBytes(
           utf8.encode('第一章 开始\n正文甲\n第二章 后续\n正文乙'),
@@ -184,6 +394,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(controller.position, isNotNull);
+      expect(controller.autoTurnInterval, const Duration(milliseconds: 32500));
+      expect(repo.settings.theme, 'white');
       expect(controller.chapterIndex, 1);
       expect(controller.position!.charOffset, greaterThan(0));
       final restoredParagraph = find.textContaining(
@@ -283,4 +495,206 @@ void main() {
       controller.dispose();
     },
   );
+  testWidgets('menu progress slider seeks within the whole book', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repo = LazyRepository();
+    final controller = engine.BookReaderController();
+    await tester.pumpWidget(
+      app(repo, ReaderView(book: book, controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tapAt(const Offset(195, 422));
+    await tester.pumpAndSettle();
+    final slider = find.byType(Slider);
+    expect(slider, findsOneWidget);
+    final rect = tester.getRect(slider);
+    final gesture = await tester.startGesture(
+      Offset(rect.left + rect.width * .04, rect.center.dy),
+    );
+    await gesture.moveTo(Offset(rect.left + rect.width * .26, rect.center.dy));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey<String>('reader-seek-preview')),
+      findsOneWidget,
+    );
+    final previewTexts = tester
+        .widgetList<Text>(
+          find.descendant(
+            of: find.byKey(const ValueKey<String>('reader-seek-preview')),
+            matching: find.byType(Text),
+          ),
+        )
+        .map((text) => text.data)
+        .whereType<String>()
+        .toList();
+    expect(previewTexts.first, contains('/'));
+    final totalPages = int.parse(previewTexts.first.split('/').last.trim());
+    expect(totalPages, greaterThan(repo.content.chapters.length));
+    expect(previewTexts.last, ' ');
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('reader-seek-preview')),
+      findsNothing,
+    );
+    expect(controller.chapterIndex, greaterThan(1));
+    expect(controller.position!.charOffset, greaterThan(0));
+    expect(tester.takeException(), isNull);
+    controller.dispose();
+  });
+
+  testWidgets('auto-read speed sheet pauses and resumes after dismissal', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repo = LazyRepository();
+    final controller = engine.BookReaderController();
+    await tester.pumpWidget(
+      app(repo, ReaderView(book: book, controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    controller.startAutoTurn(const Duration(seconds: 6));
+    await tester.pump();
+    expect(controller.isAutoTurning, isTrue);
+    await tester.tap(find.byKey(const ValueKey('auto-read-settings-entry')));
+    await tester.pump();
+    expect(controller.isAutoTurning, isFalse);
+    await tester.pumpAndSettle();
+    final originalSpeed = controller.autoTurnInterval;
+    await tester.drag(find.byType(Slider).last, const Offset(65, 0));
+    await tester.pump();
+    expect(controller.autoTurnInterval, isNot(originalSpeed));
+    expect(controller.isAutoTurning, isFalse);
+
+    await tester.tapAt(const Offset(10, 80));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(controller.isAutoTurning, isFalse);
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(controller.isAutoTurning, isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('auto-read-settings-entry')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('退出自动阅读'));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(controller.isAutoTurning, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('reader menu pauses vertical auto-read until settings settle', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repo = LazyRepository();
+    final controller = engine.BookReaderController();
+    await tester.pumpWidget(
+      app(repo, ReaderView(book: book, controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    controller.startAutoTurn(const Duration(seconds: 1));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tapAt(const Offset(195, 420));
+    await tester.pumpAndSettle();
+    expect(controller.isAutoTurning, isTrue);
+    final pausedOffset = controller.position!.charOffset;
+    await tester.pump(const Duration(seconds: 2));
+    expect(controller.position!.charOffset, pausedOffset);
+
+    await tester.tap(find.text('设置').last);
+    await tester.pumpAndSettle();
+    final reader = tester.widget<engine.BookReader>(
+      find.byType(engine.BookReader),
+    );
+    final originalFont = reader.config!.fontSize;
+    await tester.tap(find.text('A+'));
+    await tester.pumpAndSettle();
+    expect(reader.config!.fontSize, greaterThan(originalFont));
+    final reflowedOffset = controller.position!.charOffset;
+    await tester.pump(const Duration(seconds: 1));
+    expect(controller.position!.charOffset, reflowedOffset);
+
+    await tester.tapAt(const Offset(195, 250));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(controller.position!.charOffset, reflowedOffset);
+    for (var frame = 0; frame < 75; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(controller.position!.charOffset, greaterThan(reflowedOffset));
+
+    await tester.tapAt(const Offset(195, 420));
+    await tester.pumpAndSettle();
+    expect(controller.isAutoTurning, isTrue);
+    await tester.tap(find.text('设置').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('停止自动阅读'));
+    await tester.pump();
+    expect(controller.isAutoTurning, isFalse);
+    await tester.tapAt(const Offset(195, 250));
+    await tester.pump(const Duration(seconds: 1));
+    expect(controller.isAutoTurning, isFalse);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  testWidgets('catalog keeps auto-read paused until dismissal or navigation', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repo = LazyRepository();
+    final controller = engine.BookReaderController();
+    await tester.pumpWidget(
+      app(repo, ReaderView(book: book, controller: controller)),
+    );
+    await tester.pumpAndSettle();
+
+    controller.startAutoTurn(const Duration(seconds: 1));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tapAt(const Offset(195, 420));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('目录').last);
+    await tester.pumpAndSettle();
+    expect(find.byType(DraggableScrollableSheet), findsOneWidget);
+    expect(controller.isAutoTurning, isTrue);
+    final pausedOffset = controller.position!.charOffset;
+    await tester.pump(const Duration(seconds: 2));
+    expect(controller.position!.charOffset, pausedOffset);
+
+    await tester.tapAt(const Offset(15, 30));
+    await tester.pump();
+    for (var frame = 0; frame < 80; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(controller.position!.charOffset, greaterThan(pausedOffset));
+
+    await tester.tapAt(const Offset(195, 420));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('目录').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('第 0 章').last);
+    await tester.pump();
+    expect(controller.chapterIndex, 0);
+    expect(controller.isAutoTurning, isTrue);
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
 }

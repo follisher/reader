@@ -181,9 +181,12 @@ class _BookReaderState extends State<BookReader>
   Object? _error;
   int _lastChapter = -1;
   Timer? _saveTimer;
+  Timer? _autoReadResumeTimer;
 
   @override
   final ValueNotifier<bool> _menuVisible = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _autoOverlayVisible = ValueNotifier<bool>(false);
+  bool _catalogVisible = false;
 
   /// 自动翻页（分页模式）的本页计时动画：0→1 走完即翻页并重置；也驱动右侧倒计时竖线。
   /// 纵向滚动模式的自动阅读由 VerticalReader 自行按速度平滑滚动，不用此动画。
@@ -221,9 +224,15 @@ class _BookReaderState extends State<BookReader>
 
   void _syncMenuToController() {
     widget.controller?.setMenuVisible(_menuVisible.value);
+    _syncAutoOverlayPause();
     // 菜单显隐时切换系统栏：菜单出现→显示状态栏/导航栏，收起→回到沉浸。
     _enterImmersive();
-    // 唤起菜单时暂停自动翻页计时，收起后继续。
+  }
+
+  void _syncAutoOverlayPause() {
+    final visible = _menuVisible.value || _catalogVisible;
+    if (_autoOverlayVisible.value == visible) return;
+    _autoOverlayVisible.value = visible;
     _syncAutoTurn();
   }
 
@@ -245,7 +254,7 @@ class _BookReaderState extends State<BookReader>
     }
     // 停止自动阅读后复位入口形态，下次开启仍从按钮态开始。
     if (!c.autoTurning) _autoBarCollapsed = false;
-    final bool run = c.autoTurning && _pagedFlip && !_menuVisible.value;
+    final bool run = c.autoTurning && _pagedFlip && !_autoOverlayVisible.value;
     if (run) {
       _autoTurnCtrl.duration = c.autoTurnInterval;
       // 位置变化（含手动翻页 / 滑动 / 仿真翻页）→ 从 0 重新计时；
@@ -409,6 +418,7 @@ class _BookReaderState extends State<BookReader>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 进入后台前立即落盘，避免防抖窗口内丢失进度
     if (state != AppLifecycleState.resumed) {
+      _autoReadResumeTimer?.cancel();
       _saveTimer?.cancel();
       _flushSave();
     } else {
@@ -428,12 +438,14 @@ class _BookReaderState extends State<BookReader>
     widget.controller?.bindBookmark(null, null);
     widget.controller?.attach(null);
     _saveTimer?.cancel();
+    _autoReadResumeTimer?.cancel();
     _flushSave();
     _restoreSystemUiOnExit();
     _autoTurnCtrl.dispose();
     _controller?.removeListener(_onControllerChanged);
     _controller?.dispose();
     _menuVisible.dispose();
+    _autoOverlayVisible.dispose();
     super.dispose();
   }
 
@@ -458,61 +470,72 @@ class _BookReaderState extends State<BookReader>
 
   Future<void> _openCatalog() async {
     final ReadingController c = _controller!;
+    // Keep auto-read paused while the main menu hands off to the catalog.
+    _catalogVisible = true;
+    _syncAutoOverlayPause();
     _menuVisible.value = false;
-    await _hydrateBookmarkExcerpts(c);
-    // 评论由业务方在选中回调里自行写入 commentStore（插件不再内部新增），因此打开
-    // 目录/笔记前从存储重新拉取，确保刚写入的评论也能出现在笔记列表。
-    await _reloadComments();
-    if (!mounted) return;
-    final ReadingPosition? picked = await showModalBottomSheet<ReadingPosition>(
-      context: context,
-      isScrollControlled: true,
-      // 由 DraggableScrollableSheet 自绘圆角纸张背景，因此外层透明。
-      backgroundColor: Colors.transparent,
-      builder: (_) => ReaderLabelsScope(
-        labels: widget.labels,
-        // 可拖拽面板：列表滚到顶部后继续下拉会带动整个面板下移，拖到底部即关闭。
-        child: DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.85,
-          minChildSize: 0.5,
-          maxChildSize: 0.92,
-          builder: (BuildContext context, ScrollController scrollController) {
-            return ClipRRect(
-              borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(16)),
-              child: ColoredBox(
-                color: _config.theme.paperColor,
-                child: CatalogSheet(
-                  bookTitle: c.manifest.title,
-                  author: c.manifest.author,
-                  intro: c.manifest.intro,
-                  coverColor: c.manifest.coverColor,
-                  chapterTitles: c.manifest.chapterTitles,
-                  toc: c.manifest.toc,
-                  currentIndex: c.chapterIndex,
-                  currentOffset: c.charOffset,
-                  bookmarks: _bookmarks,
-                  underlines: _underlines,
-                  comments: _comments,
-                  onDeleteBookmark: _deleteBookmark,
-                  onDeleteUnderline: (Underline u) =>
-                      _removeUnderlines(<Underline>[u]),
-                  onDeleteComment: (Comment cm) =>
-                      _removeComments(<Comment>[cm]),
-                  theme: _config.theme,
-                  scrollController: scrollController,
-                  isChapterLocked: c.chapterLocked,
+    try {
+      await _hydrateBookmarkExcerpts(c);
+      // 评论由业务方在选中回调里自行写入 commentStore（插件不再内部新增），因此打开
+      // 目录/笔记前从存储重新拉取，确保刚写入的评论也能出现在笔记列表。
+      await _reloadComments();
+      if (!mounted) return;
+      final ReadingPosition? picked =
+          await showModalBottomSheet<ReadingPosition>(
+        context: context,
+        isScrollControlled: true,
+        // 由 DraggableScrollableSheet 自绘圆角纸张背景，因此外层透明。
+        backgroundColor: Colors.transparent,
+        builder: (_) => ReaderLabelsScope(
+          labels: widget.labels,
+          // 可拖拽面板：列表滚到顶部后继续下拉会带动整个面板下移，拖到底部即关闭。
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.85,
+            minChildSize: 0.5,
+            maxChildSize: 0.92,
+            builder: (BuildContext context, ScrollController scrollController) {
+              return ClipRRect(
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(16)),
+                child: ColoredBox(
+                  color: _config.theme.paperColor,
+                  child: CatalogSheet(
+                    bookTitle: c.manifest.title,
+                    author: c.manifest.author,
+                    intro: c.manifest.intro,
+                    coverColor: c.manifest.coverColor,
+                    chapterTitles: c.manifest.chapterTitles,
+                    toc: c.manifest.toc,
+                    currentIndex: c.chapterIndex,
+                    currentOffset: c.charOffset,
+                    bookmarks: _bookmarks,
+                    underlines: _underlines,
+                    comments: _comments,
+                    onDeleteBookmark: _deleteBookmark,
+                    onDeleteUnderline: (Underline u) =>
+                        _removeUnderlines(<Underline>[u]),
+                    onDeleteComment: (Comment cm) =>
+                        _removeComments(<Comment>[cm]),
+                    theme: _config.theme,
+                    scrollController: scrollController,
+                    isChapterLocked: c.chapterLocked,
+                  ),
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         ),
-      ),
-    );
-    if (picked != null) {
-      // 同章位置也必须执行：滚动模式的一章可有多个书签，偏移 0 也可能是有效目标。
-      c.loadChapter(picked.chapterIndex, charOffset: picked.charOffset);
+      );
+      if (picked != null) {
+        // 同章位置也必须执行：滚动模式的一章可有多个书签，偏移 0 也可能是有效目标。
+        c.loadChapter(picked.chapterIndex, charOffset: picked.charOffset);
+      }
+    } finally {
+      if (mounted) {
+        _catalogVisible = false;
+        _syncAutoOverlayPause();
+      }
     }
   }
 
@@ -657,13 +680,24 @@ class _BookReaderState extends State<BookReader>
                 kReaderContentSafety,
           );
 
-          if (_config.flipType == FlipType.scrollVertical) {
-            return VerticalReader(controller: c, onTapToggleMenu: _toggleMenu);
-          }
-
           // 传入“实际渲染解析出的样式与地区”：分页度量必须与屏幕渲染完全同源
           // （含主题字体、CJK 地区回退），否则换行行数不同会导致末行被裁切。
           final TextStyle base = DefaultTextStyle.of(context).style;
+          if (_config.flipType == FlipType.scrollVertical) {
+            c.updatePreviewViewport(
+              contentSize,
+              MediaQuery.of(context).textScaler,
+              bodyStyle: base.merge(_config.textStyle),
+              headingStyle: base.merge(_config.headingStyle),
+              textLocale: Localizations.maybeLocaleOf(context),
+            );
+            return VerticalReader(
+              controller: c,
+              onTapToggleMenu: _toggleMenu,
+              autoPauseListenable: _autoOverlayVisible,
+            );
+          }
+
           c.updateViewport(
             contentSize,
             MediaQuery.of(context).textScaler,
@@ -743,7 +777,10 @@ class _BookReaderState extends State<BookReader>
       onOpenCatalog: _openCatalog,
       onPrevChapter: () => c.loadChapter(c.chapterIndex - 1),
       onNextChapter: () => c.loadChapter(c.chapterIndex + 1),
-      onSeekChapter: c.loadChapter,
+      onSeekProgress: (double progress) {
+        unawaited(c.seekToProgress(progress));
+      },
+      seekPreview: c.previewForProgress,
       onRequestClose: () => _menuVisible.value = false,
       onSettingsPanelChanged: (bool open) =>
           widget.controller?.setMenuPanelExpanded(open),
@@ -800,6 +837,7 @@ class _BookReaderState extends State<BookReader>
   /// 按钮态：药丸按钮，点击弹出速度 / 退出面板。
   Widget _autoReadPill(ReaderTheme t, String label) {
     return GestureDetector(
+      key: const ValueKey<String>('auto-read-settings-entry'),
       behavior: HitTestBehavior.opaque,
       onTap: _openAutoReadSettings,
       child: Container(
@@ -841,11 +879,17 @@ class _BookReaderState extends State<BookReader>
   Future<void> _openAutoReadSettings() async {
     final ReadingController? c = _controller;
     if (c == null) return;
+    _autoReadResumeTimer?.cancel();
+    // Pause before the sheet animates in; changing the speed while it is open
+    // must not keep driving the page behind the overlay.
+    final bool wasAutoTurning = c.autoTurning;
+    if (wasAutoTurning) c.setAutoTurning(false);
+    bool resumeAfterClose = wasAutoTurning;
     final ReaderTheme t = _config.theme;
     final ReaderLabels labels = widget.labels; // 同上：不能用 of(context)
-    // 速度映射：滑到「慢」= 20s/页，「快」= 2s/页。
-    const double slowSecs = 20;
-    const double fastSecs = 2;
+    // 速度映射：滑到「慢」= 40s/屏，「快」= 15s/屏。
+    const double slowSecs = 40;
+    const double fastSecs = 15;
     double toValue(Duration d) =>
         ((slowSecs - d.inMilliseconds / 1000) / (slowSecs - fastSecs))
             .clamp(0.0, 1.0);
@@ -894,6 +938,7 @@ class _BookReaderState extends State<BookReader>
                 Divider(height: 1, color: t.dividerColor),
                 InkWell(
                   onTap: () {
+                    resumeAfterClose = false;
                     Navigator.of(ctx).pop();
                     c.setAutoTurning(false);
                   },
@@ -917,5 +962,13 @@ class _BookReaderState extends State<BookReader>
         );
       },
     );
+    if (!mounted || !resumeAfterClose || !identical(_controller, c)) return;
+    // Let the bottom-sheet dismissal and the reader's final position
+    // correction finish before starting at the newly selected speed.
+    _autoReadResumeTimer = Timer(const Duration(milliseconds: 450), () {
+      if (mounted && identical(_controller, c) && !_menuVisible.value) {
+        c.setAutoTurning(true);
+      }
+    });
   }
 }

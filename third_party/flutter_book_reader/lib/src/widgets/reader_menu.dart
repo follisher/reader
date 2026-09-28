@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../reader_config.dart';
 import '../reader_labels.dart';
 import '../reader_theme.dart';
+import '../controller/reader_seek_preview.dart';
 
 /// 阅读器悬浮菜单：顶部标题栏 + 底部控制栏 + 设置/主题面板。
 ///
@@ -25,7 +26,8 @@ class ReaderMenu extends StatefulWidget {
     required this.onOpenCatalog,
     required this.onPrevChapter,
     required this.onNextChapter,
-    required this.onSeekChapter,
+    required this.onSeekProgress,
+    required this.seekPreview,
     required this.onRequestClose,
     this.onSettingsPanelChanged,
     this.onStartAutoTurn,
@@ -53,7 +55,8 @@ class ReaderMenu extends StatefulWidget {
   final VoidCallback onOpenCatalog;
   final VoidCallback onPrevChapter;
   final VoidCallback onNextChapter;
-  final ValueChanged<int> onSeekChapter;
+  final ValueChanged<double> onSeekProgress;
+  final ReaderSeekPreview Function(double progress) seekPreview;
 
   /// 点击顶/底栏之外的空白区域时请求关闭整个菜单
   final VoidCallback onRequestClose;
@@ -89,6 +92,7 @@ class _ReaderMenuState extends State<ReaderMenu> {
   ];
 
   _Panel _panel = _Panel.none;
+  double? _dragProgress;
   late ReaderLabels _labels;
 
   /// 统一切换底部面板并通知外部（设置面板展开 / 收起）。
@@ -142,7 +146,12 @@ class _ReaderMenuState extends State<ReaderMenu> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.visible && !widget.visible && _panel != _Panel.none) {
       _panel = _Panel.none;
-      widget.onSettingsPanelChanged?.call(false);
+      // The parent may listen and rebuild; notify after this build finishes.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !widget.visible && _panel == _Panel.none) {
+          widget.onSettingsPanelChanged?.call(false);
+        }
+      });
     }
   }
 
@@ -169,7 +178,62 @@ class _ReaderMenuState extends State<ReaderMenu> {
             ),
             _buildTopBar(),
             _buildBottomArea(),
+            if (_dragProgress != null) _buildSeekPreview(),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSeekPreview() {
+    final ReaderSeekPreview preview = widget.seekPreview(_dragProgress!);
+    final double safeBottom = MediaQuery.paddingOf(context).bottom;
+    return Positioned(
+      left: 32,
+      right: 32,
+      bottom: safeBottom + 150,
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            key: const ValueKey<String>('reader-seek-preview'),
+            constraints: const BoxConstraints(maxWidth: 280),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+            decoration: BoxDecoration(
+              color: const Color(0xE63B3B3B),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: const <BoxShadow>[
+                BoxShadow(
+                  color: Color(0x33000000),
+                  blurRadius: 12,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  '${preview.page} / ${preview.totalPages}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  preview.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -343,13 +407,20 @@ class _ReaderMenuState extends State<ReaderMenu> {
         children: <Widget>[
           _seekText(_labels.prevChapter, widget.onPrevChapter),
           Expanded(
-              child: _buildSlider(
-            value: widget.chapterCount <= 1
-                ? 0
-                : widget.chapterIndex / (widget.chapterCount - 1),
-            onChanged: (double v) =>
-                widget.onSeekChapter((v * (widget.chapterCount - 1)).round()),
-          )),
+            child: _buildSlider(
+              value: _dragProgress ?? widget.progress,
+              onChangeStart: (double value) {
+                setState(() => _dragProgress = value);
+              },
+              onChanged: (double value) {
+                setState(() => _dragProgress = value);
+              },
+              onChangeEnd: (double value) {
+                setState(() => _dragProgress = null);
+                widget.onSeekProgress(value);
+              },
+            ),
+          ),
           _seekText(_labels.nextChapter, widget.onNextChapter),
         ],
       ),
@@ -372,6 +443,8 @@ class _ReaderMenuState extends State<ReaderMenu> {
   Widget _buildSlider({
     required double value,
     required ValueChanged<double> onChanged,
+    ValueChanged<double>? onChangeStart,
+    ValueChanged<double>? onChangeEnd,
     double min = 0,
     double max = 1,
   }) {
@@ -387,10 +460,13 @@ class _ReaderMenuState extends State<ReaderMenu> {
         trackShape: const RoundedRectSliderTrackShape(),
       ),
       child: Slider(
-          min: min,
-          max: max,
-          value: value.clamp(min, max),
-          onChanged: onChanged),
+        min: min,
+        max: max,
+        value: value.clamp(min, max),
+        onChangeStart: onChangeStart,
+        onChanged: onChanged,
+        onChangeEnd: onChangeEnd,
+      ),
     );
   }
 

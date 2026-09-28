@@ -59,7 +59,8 @@ class ReadingController extends ReaderControllerBase
   // —— 自动翻页 ——
 
   bool _autoTurning = false;
-  Duration _autoTurnInterval = const Duration(seconds: 5);
+  // Midpoint of the reader's 15–50 s speed slider (moderate on first use).
+  Duration _autoTurnInterval = const Duration(milliseconds: 32500);
 
   /// 是否处于自动翻页态（分页模式定时翻页、纵向模式平滑自动滚动）。
   bool get autoTurning => _autoTurning;

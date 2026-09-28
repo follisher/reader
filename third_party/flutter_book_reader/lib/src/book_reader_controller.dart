@@ -104,7 +104,7 @@ class BookReaderController extends ChangeNotifier {
 
   /// 当前自动翻页间隔（分页模式：每页停留时长；纵向模式：滚过约一屏的时长）。
   Duration get autoTurnInterval =>
-      _rc?.autoTurnInterval ?? const Duration(seconds: 5);
+      _rc?.autoTurnInterval ?? const Duration(milliseconds: 32500);
 
   /// 开始自动翻页。分页模式每隔 [interval] 翻一页并在右侧显示倒计时竖线；
   /// 纵向滚动模式按该速度平滑向下滚。到全书末尾自动停止。不传 [interval] 沿用当前值。

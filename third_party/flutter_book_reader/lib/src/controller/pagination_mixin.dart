@@ -78,6 +78,22 @@ mixin PaginationMixin on ReaderControllerBase, ChapterContentMixin {
     return kReaderHeadingGapTop + h + kReaderHeadingGapBottom;
   }
 
+  /// 纵向阅读也需要当前排版参数来计算全书页码预览，
+  /// 但不应因此把纵向滚动位置吸附到某个分页页首。
+  void updatePreviewViewport(
+    Size size,
+    TextScaler ts, {
+    TextStyle? bodyStyle,
+    TextStyle? headingStyle,
+    Locale? textLocale,
+  }) {
+    contentSize = size;
+    textScaler = ts;
+    paintTextStyle = bodyStyle;
+    paintHeadingStyle = headingStyle;
+    locale = textLocale;
+  }
+
   /// 布局阶段调用：更新可用区域并按需重排当前章（在 build 期间调用，不通知）。
   ///
   /// [bodyStyle]/[headingStyle]/[textLocale] 为实际渲染解析出的样式与地区，
