@@ -136,18 +136,18 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       final files = await openFiles(
         acceptedTypeGroups: [
           const XTypeGroup(
-            label: 'EPUB / TXT',
-            extensions: ['epub', 'txt'],
-            uniformTypeIdentifiers: [
-              'org.idpf.epub-container',
-              'public.plain-text',
-            ],
+            label: 'UTF-8 TXT',
+            extensions: ['txt'],
+            uniformTypeIdentifiers: ['public.plain-text'],
           ),
         ],
       );
       final messages = <String>[];
       for (final file in files) {
         try {
+          if (!file.name.toLowerCase().endsWith('.txt')) {
+            throw const FormatException('本地导入仅支持 UTF-8 TXT 文件');
+          }
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
           }
@@ -1682,7 +1682,7 @@ class _ShelfEmpty extends StatelessWidget {
           ),
           if (allEmpty) ...[
             const SizedBox(height: 12),
-            const Text('支持 EPUB 和 UTF-8 TXT，导入后可离线阅读'),
+            const Text('支持导入 UTF-8 TXT，导入后可离线阅读'),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: busy ? null : onImport,
