@@ -33,6 +33,10 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   sqflite_common_ffi: ^2.3.6
 
+flutter:
+  assets:
+    - asset/book_cover.png
+
 # Tests use the host SQLite library, avoiding a build-time binary download.
 hooks:
   user_defines:

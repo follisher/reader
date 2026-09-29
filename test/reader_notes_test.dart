@@ -50,6 +50,68 @@ class FailingNotesRepository extends FakeRepository {
 
 void main() {
   test(
+    'removed built-in book stays hidden after asset sync and restart',
+    () async {
+      sqfliteFfiInit();
+      final dir = await Directory.systemTemp.createTemp(
+        'reader-hidden-built-in-',
+      );
+      final bytes = utf8.encode('第一章\n这是一本文内置图书');
+      var repo = await LocalBookshelfRepository.create(
+        directory: dir,
+        factory: databaseFactoryFfi,
+      );
+      try {
+        final book = await repo.importBytes(
+          bytes,
+          'built-in.txt',
+          source: BookSource.builtIn,
+        );
+        await repo.saveNotes(book.id, ReaderNoteKind.underline, [
+          {
+            'chapterIndex': 0,
+            'start': 0,
+            'end': 2,
+            'text': '第一章',
+            'createdAt': 1,
+          },
+        ]);
+
+        await repo.removeBook(book.id);
+        expect(await repo.watchBooks().first, isEmpty);
+        expect(
+          await repo.loadNotes(book.id, ReaderNoteKind.underline),
+          isEmpty,
+        );
+        await repo.close();
+
+        repo = await LocalBookshelfRepository.create(
+          directory: dir,
+          factory: databaseFactoryFfi,
+        );
+        final assetSync = await repo.importBytesWithResult(
+          bytes,
+          'built-in.txt',
+          source: BookSource.builtIn,
+        );
+        expect(assetSync.isDuplicate, isTrue);
+        expect(await repo.watchBooks().first, isEmpty);
+
+        final restored = await repo.importBytesWithResult(
+          bytes,
+          'built-in.txt',
+          source: BookSource.imported,
+        );
+        expect(restored.isDuplicate, isFalse);
+        expect((await repo.watchBooks().first).single.id, book.id);
+      } finally {
+        await repo.close();
+        await dir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
     'SQLite persists all note kinds, isolates books, replaces and removes notes',
     () async {
       sqfliteFfiInit();
@@ -99,6 +161,49 @@ void main() {
           repo.saveNotes(a.id, ReaderNoteKind.comment, [comment.toJson()]),
           throwsStateError,
         );
+      } finally {
+        await repo.close();
+        await dir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'shelf aggregates recent markers and excerpt feed deletes one row',
+    () async {
+      sqfliteFfiInit();
+      final dir = await Directory.systemTemp.createTemp('reader-insights-');
+      final repo = await LocalBookshelfRepository.create(
+        directory: dir,
+        factory: databaseFactoryFfi,
+      );
+      try {
+        final savedBook = await repo.importBytes(
+          utf8.encode('第一章 开始\n正文'),
+          'insights.txt',
+        );
+        await repo.saveNotes(savedBook.id, ReaderNoteKind.bookmark, [
+          bookmark.toJson(),
+        ]);
+        await repo.saveNotes(savedBook.id, ReaderNoteKind.underline, [
+          underline.toJson(),
+          underline.copyWith(start: 20, end: 25, text: '第二条划线').toJson(),
+        ]);
+        await repo.saveNotes(savedBook.id, ReaderNoteKind.comment, [
+          comment.toJson(),
+        ]);
+
+        final shelf = await repo.watchShelfEntries().first;
+        expect(shelf.single.noteCount, 4);
+        expect(shelf.single.markers, hasLength(4));
+        expect(shelf.single.markers.first.createdAt, bookmark.createdAt);
+
+        final excerpts = await repo.loadExcerpts();
+        expect(excerpts, hasLength(3));
+        expect(excerpts.where((item) => item.isComment), hasLength(1));
+        final target = excerpts.first;
+        await repo.deleteReaderNote(target.ref);
+        expect(await repo.loadExcerpts(), hasLength(2));
       } finally {
         await repo.close();
         await dir.delete(recursive: true);
@@ -162,6 +267,63 @@ void main() {
       }
     },
   );
+
+  test('v7 upgrade backfills excerpt query columns', () async {
+    sqfliteFfiInit();
+    final dir = await Directory.systemTemp.createTemp('reader-notes-v7-');
+    final db = await databaseFactoryFfi.openDatabase(
+      '${dir.path}/reader.sqlite',
+      options: OpenDatabaseOptions(
+        version: 7,
+        onCreate: (db, _) async {
+          await db.execute(
+            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER)',
+          );
+          await db.execute(
+            'CREATE TABLE settings (id INTEGER PRIMARY KEY, font_size REAL NOT NULL, dark INTEGER NOT NULL, options TEXT)',
+          );
+          await db.execute(
+            'CREATE TABLE reader_notes (book_id TEXT NOT NULL, kind TEXT NOT NULL, note_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (book_id, kind, note_key))',
+          );
+          await db.execute(
+            'CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, color TEXT, created_at INTEGER NOT NULL)',
+          );
+          await db.execute(
+            'CREATE TABLE book_tags (book_id TEXT NOT NULL, tag_id INTEGER NOT NULL, is_catalog INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, PRIMARY KEY (book_id, tag_id))',
+          );
+          await db.insert('books', {
+            'id': 'old',
+            'title': '旧书',
+            'author': '作者',
+            'format': 'txt',
+            'source': 'imported',
+            'file_name': 'old.txt',
+            'added_at': 1,
+          });
+          await db.insert('reader_notes', {
+            'book_id': 'old',
+            'kind': ReaderNoteKind.underline.name,
+            'note_key': underline.key,
+            'payload': jsonEncode(underline.toJson()),
+          });
+        },
+      ),
+    );
+    await db.close();
+    final repo = await LocalBookshelfRepository.create(
+      directory: dir,
+      factory: databaseFactoryFfi,
+    );
+    try {
+      final excerpts = await repo.loadExcerpts();
+      expect(excerpts.single.quote, underline.text);
+      expect(excerpts.single.chapterIndex, underline.chapterIndex);
+      expect(excerpts.single.startOffset, underline.start);
+    } finally {
+      await repo.close();
+      await dir.delete(recursive: true);
+    }
+  });
 
   test(
     'failed engine writes retain latest snapshot and retry without losing other failures',
@@ -253,6 +415,11 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('阅读想法'), findsOneWidget);
+      final commentDetails = tester.widget<Text>(find.textContaining('原文：'));
+      expect(
+        commentDetails.data!.split('\n').last,
+        matches(RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')),
+      );
       await tester.tap(find.byTooltip('删除评论'));
       await tester.pumpAndSettle();
       expect(await repo.loadNotes(book.id, ReaderNoteKind.comment), isEmpty);

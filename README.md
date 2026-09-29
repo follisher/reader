@@ -20,7 +20,8 @@ dependencies:
 
 ## 已实现能力
 
-- 书架展示、书名/作者筛选、阅读进度与移除确认。
+- 三列网格书架、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
+- 跨书摘录流集中展示划线和评论，支持搜索、按书筛选、排序、随机回顾、复制、删除及跳回原文。
 - 多选导入本地 EPUB 和 UTF-8 TXT 文件。
 - EPUB 元数据、spine 章节顺序、正文与内嵌位图读取；书架会显示 EPUB 声明的封面，没有封面时使用默认图标。
 - TXT 常见中文章节名与 `Chapter N` 识别；无章节文本自动分段。
@@ -59,8 +60,21 @@ BookshelfView(
       MaterialPageRoute(builder: (_) => ReaderView(book: book)),
     );
   },
+  onReaderOpen: (request) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ReaderView(
+          book: request.book,
+          initialChapter: request.chapterIndex,
+          initialCharOffset: request.charOffset,
+        ),
+      ),
+    );
+  },
 )
 ```
+
+`onReaderOpen` 用于从摘录卡片精确定位到章节字符位置。它是可选回调；不传时摘录卡片会回退到 `onBookTap`，只能打开书籍而不能保证定位到该条摘录。
 
 应用退出前或根容器释放后，调用 `readerRepository.close()` 关闭数据库。
 
@@ -104,7 +118,7 @@ await repository.importBytes(
 
 单个图书限制为 50 MB；EPUB 最多 10,000 个资源，声明的解压内容限制为 150 MB。解析在后台 isolate 中进行。EPUB 会移除脚本、嵌入式框架、外部链接与外部资源引用，不执行书内代码。
 
-当前版本将普通 EPUB/TXT 副本保存在应用沙盒中。它不提供 DRM、图书加密、密钥授权、下载、同步、书签、笔记或高亮功能。未来接入加密内容时，应通过 `BookContent` 接口按章提供已解密内容，避免将整本明文写入磁盘。
+当前版本将普通 EPUB/TXT 副本及书签、划线、评论保存在应用沙盒中。它不提供 DRM、图书加密、密钥授权、账号或云同步。未来接入加密内容时，应通过 `BookContent` 接口按章提供已解密内容，避免将整本明文写入磁盘。
 
 本模块不是完整的 EPUB 排版引擎：不支持复杂外部 CSS、固定版式、音视频、DRM；SVG 图片可能无法显示。默认文本阅读不会呈现原书图片和富文本样式，请使用“图文阅读”查看。TXT 需要 UTF-8 编码，GBK/UTF-16 文件应先转换。
 
@@ -150,11 +164,11 @@ ReaderView(book: shelfBook, source: remoteSource, controller: controller);
 
 `BookContent` 仍可使用内存章节；大型/远程内容实现 `OnDemandBookContent`，让 `chapters` 只返回元数据，通过 `loadChapter(index)` 读取正文。调用方统一使用 `content.readChapter(index)`，不要依赖缓存对象的 `chapters[i].blocks` 已经加载。
 
-数据库升级至 v5，保留原书架、阅读进度和设置，新增 `reader_notes` 表，按书籍 ID、笔记类型及锚点保存书签、划线和评论。章节缓存仍为 v2，原始图书副本仍保留。
+数据库当前为 v8。升级会保留原书架、阅读进度、设置和 `reader_notes` payload，并回填用于书架聚合、摘录搜索与排序的查询列和索引。章节缓存仍为 v2，原始图书副本仍保留。
 
 正文支持长按划线、评论、复制、浏览器查询（百度）和系统文字分享。评论输入层保存后刷新段尾角标，点击角标可查看和删除段评；目录中的笔记支持查看、定位和删除。书签、划线、评论均存入本地 `reader.sqlite`，重开阅读器后恢复，移除图书时一起清理。写入失败保留当前会话的数据并显示重试入口；评论输入框保留草稿。首次读取失败会显示打开失败，避免用空数据覆盖已有笔记。
 
-自定义 `BookshelfRepository` 需实现 `loadNotes` / `saveNotes`，后者按书籍和 `ReaderNoteKind` 原子替换列表。自定义章节源也使用书架 `book.id` 保存笔记，需保证书籍 ID、章节顺序及正文稳定。锚点使用引擎字符坐标，当前固定首行缩进为 2；字号和翻页模式变化不会改变坐标。连续滚动模式的选区限于单段，图文阅读暂不提供这些批注交互。
+自定义 `BookshelfRepository` 需实现 `loadNotes` / `saveNotes`，后者按书籍和 `ReaderNoteKind` 原子替换列表。若同时实现可选的 `BookshelfInsightsRepository`，书架会使用批量聚合、实时摘录流与精确单条删除；未实现时自动回退到基础仓库接口。自定义章节源也使用书架 `book.id` 保存笔记，需保证书籍 ID、章节顺序及正文稳定。锚点使用引擎字符坐标，当前固定首行缩进为 2；字号和翻页模式变化不会改变坐标。连续滚动模式的选区限于单段，图文阅读暂不提供这些批注交互。
 
 自动阅读没有接入屏幕常亮插件。Android 系统版本/宿主 target SDK 可能限制隐藏系统栏，沉浸模式需在宿主真机验证。新增原生插件后需完整重启宿主应用，热重载无法注册分享和浏览器插件。
 

@@ -58,6 +58,72 @@ void main() {
   });
 
   test(
+    'reader, persisted shelf, and restore share character progress',
+    () async {
+      final repo = LazyRepository();
+      final source = RepositoryBookSource(repo, book);
+      final manifest = await source.loadManifest();
+      final config = engine.ReaderConfig();
+      final controller = ReadingController(
+        source: source,
+        manifest: manifest,
+        config: config,
+        startChapter: 10,
+      );
+      await controller.ensureLoaded(10);
+      final text = await source.textChapter(10);
+      final canonicalOffset = text.length ~/ 2;
+      final engineOffset = text.toEngine(
+        canonicalOffset,
+        config.firstLineIndent,
+      );
+      controller.charOffset = engineOffset;
+      final expected = (10 + canonicalOffset / text.length) / 40;
+      expect(controller.globalProgress, closeTo(expected, 1e-9));
+
+      final store = RepositoryProgressStore(
+        repository: repo,
+        book: book,
+        source: source,
+        config: config,
+        manifest: manifest,
+        canSave: () => true,
+        onError: (error) => expect(error, isNull),
+      );
+      await store.save(book.id, controller.position);
+      final saved = repo.saves.single;
+      expect(saved.progress, closeTo(controller.globalProgress, 1e-9));
+
+      final restoredBook = Book(
+        id: book.id,
+        title: book.title,
+        author: book.author,
+        format: book.format,
+        source: book.source,
+        fileName: book.fileName,
+        addedAt: book.addedAt,
+        location: saved,
+      );
+      final restoredSource = RepositoryBookSource(repo, restoredBook);
+      final restoredStore = RepositoryProgressStore(
+        repository: repo,
+        book: restoredBook,
+        source: restoredSource,
+        config: config,
+        manifest: manifest,
+        canSave: () => true,
+        onError: (error) => expect(error, isNull),
+      );
+      final restored = await restoredStore.load(book.id);
+      expect(restored?.chapterIndex, 10);
+      expect(restored?.charOffset, engineOffset);
+
+      controller.dispose();
+      config.dispose();
+    },
+  );
+
+  test(
     'fresh database uses the white theme without changing legacy rows',
     () async {
       sqfliteFfiInit();

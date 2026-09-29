@@ -13,6 +13,66 @@ import 'parser.dart';
 
 enum ReaderNoteKind { bookmark, underline, comment }
 
+class ShelfNoteMarker {
+  const ShelfNoteMarker({
+    required this.kind,
+    required this.noteKey,
+    required this.createdAt,
+  });
+
+  final ReaderNoteKind kind;
+  final String noteKey;
+  final int createdAt;
+}
+
+class ShelfEntry {
+  const ShelfEntry({
+    required this.book,
+    required this.noteCount,
+    required this.markers,
+  });
+
+  final Book book;
+  final int noteCount;
+  final List<ShelfNoteMarker> markers;
+}
+
+class ReaderNoteRef {
+  const ReaderNoteRef({
+    required this.bookId,
+    required this.kind,
+    required this.noteKey,
+  });
+
+  final String bookId;
+  final ReaderNoteKind kind;
+  final String noteKey;
+}
+
+class ExcerptItem {
+  const ExcerptItem({
+    required this.ref,
+    required this.book,
+    required this.chapterIndex,
+    required this.startOffset,
+    required this.chapterTitle,
+    required this.createdAt,
+    required this.quote,
+    required this.comment,
+  });
+
+  final ReaderNoteRef ref;
+  final Book book;
+  final int chapterIndex;
+  final int startOffset;
+  final String chapterTitle;
+  final int createdAt;
+  final String quote;
+  final String comment;
+
+  bool get isComment => ref.kind == ReaderNoteKind.comment;
+}
+
 abstract interface class BookshelfRepository {
   Future<List<Map<String, dynamic>>> loadNotes(
     String bookId,
@@ -42,6 +102,15 @@ abstract interface class BookshelfRepository {
   Future<void> syncCatalogTags(String bookId, Map<String, String?> tags);
 }
 
+/// Optional aggregate queries used by the enhanced shelf. Keeping these in a
+/// companion interface preserves compatibility with custom repositories.
+abstract interface class BookshelfInsightsRepository {
+  Stream<List<ShelfEntry>> watchShelfEntries();
+  Stream<List<ExcerptItem>> watchExcerpts();
+  Future<List<ExcerptItem>> loadExcerpts();
+  Future<void> deleteReaderNote(ReaderNoteRef ref);
+}
+
 class BookImportResult {
   const BookImportResult({required this.book, required this.isDuplicate});
   final Book book;
@@ -51,7 +120,8 @@ class BookImportResult {
 Future<BookContent> _parseLocal((Uint8List, String) input) =>
     LocalBookParser().parse(input.$1, input.$2);
 
-class LocalBookshelfRepository implements BookshelfRepository {
+class LocalBookshelfRepository
+    implements BookshelfRepository, BookshelfInsightsRepository {
   /// Version of the on-disk cache JSON and chapter files.
   static const cacheFormatVersion = 2;
 
@@ -78,18 +148,24 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 7,
+        version: 9,
         onCreate: (db, _) async {
           await db.execute(
-            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER)',
+            'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0)',
           );
           await db.execute(
             'CREATE TABLE settings (id INTEGER PRIMARY KEY, font_size REAL NOT NULL, dark INTEGER NOT NULL, options TEXT)',
           );
           await _createNotesTable(db);
+          await _createNotesIndexes(db);
           await _createTagsTables(db);
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 9) {
+            await db.execute(
+              'ALTER TABLE books ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0',
+            );
+          }
           if (oldVersion < 7) await _createTagsTables(db);
           if (oldVersion < 6) {
             await db.execute(
@@ -97,6 +173,11 @@ class LocalBookshelfRepository implements BookshelfRepository {
             );
           }
           if (oldVersion < 5) await _createNotesTable(db);
+          if (oldVersion >= 5 && oldVersion < 8) {
+            await _addNotesQueryColumns(db);
+            await _backfillNotesQueryColumns(db);
+          }
+          if (oldVersion < 8) await _createNotesIndexes(db);
           if (oldVersion < 4) {
             await db.execute(
               'ALTER TABLE books ADD COLUMN char_offset INTEGER',
@@ -124,15 +205,98 @@ class LocalBookshelfRepository implements BookshelfRepository {
       db,
       parser ?? LocalBookParser(),
     );
+    await repository._ensureHiddenBooksSchema();
     await repository._repairEncodedTxtTitles();
     return repository;
+  }
+
+  Future<void> _ensureHiddenBooksSchema() async {
+    final columns = await _db.rawQuery('PRAGMA table_info(books)');
+    if (columns.any((column) => column['name'] == 'is_hidden')) return;
+    await _db.execute(
+      'ALTER TABLE books ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0',
+    );
   }
 
   static Future<void> _createNotesTable(Database db) => db.execute(
     'CREATE TABLE reader_notes (book_id TEXT NOT NULL, kind TEXT NOT NULL, '
     'note_key TEXT NOT NULL, payload TEXT NOT NULL, '
+    'created_at INTEGER NOT NULL DEFAULT 0, '
+    'chapter_index INTEGER NOT NULL DEFAULT 0, '
+    'start_offset INTEGER NOT NULL DEFAULT 0, '
+    'display_text TEXT NOT NULL DEFAULT \'\', '
+    'quote_text TEXT NOT NULL DEFAULT \'\', '
     'PRIMARY KEY (book_id, kind, note_key))',
   );
+
+  static Future<void> _addNotesQueryColumns(Database db) async {
+    await db.execute(
+      'ALTER TABLE reader_notes ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE reader_notes ADD COLUMN chapter_index INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      'ALTER TABLE reader_notes ADD COLUMN start_offset INTEGER NOT NULL DEFAULT 0',
+    );
+    await db.execute(
+      "ALTER TABLE reader_notes ADD COLUMN display_text TEXT NOT NULL DEFAULT ''",
+    );
+    await db.execute(
+      "ALTER TABLE reader_notes ADD COLUMN quote_text TEXT NOT NULL DEFAULT ''",
+    );
+  }
+
+  static Future<void> _createNotesIndexes(Database db) async {
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS reader_notes_book_created '
+      'ON reader_notes(book_id, created_at DESC, note_key)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS reader_notes_kind_created '
+      'ON reader_notes(kind, created_at DESC, note_key)',
+    );
+  }
+
+  static Map<String, Object?> _queryFields(
+    ReaderNoteKind kind,
+    Map<String, dynamic> note,
+  ) => <String, Object?>{
+    'created_at': note['createdAt'] as int? ?? 0,
+    'chapter_index': note['chapterIndex'] as int? ?? 0,
+    'start_offset': kind == ReaderNoteKind.bookmark
+        ? note['charOffset'] as int? ?? 0
+        : note['start'] as int? ?? 0,
+    'display_text': kind == ReaderNoteKind.bookmark
+        ? note['excerpt'] as String? ?? ''
+        : kind == ReaderNoteKind.underline
+        ? note['text'] as String? ?? ''
+        : note['text'] as String? ?? '',
+    'quote_text': kind == ReaderNoteKind.comment
+        ? note['quote'] as String? ?? ''
+        : '',
+  };
+
+  static Future<void> _backfillNotesQueryColumns(Database db) async {
+    final rows = await db.query('reader_notes');
+    final batch = db.batch();
+    for (final row in rows) {
+      try {
+        final kind = ReaderNoteKind.values.byName(row['kind'] as String);
+        final note =
+            jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+        batch.update(
+          'reader_notes',
+          _queryFields(kind, note),
+          where: 'book_id = ? AND kind = ? AND note_key = ?',
+          whereArgs: [row['book_id'], row['kind'], row['note_key']],
+        );
+      } catch (_) {
+        // Preserve malformed legacy payloads; aggregate views will ignore them.
+      }
+    }
+    await batch.commit(noResult: true);
+  }
 
   static Future<void> _createTagsTables(Database db) async {
     await db.execute(
@@ -183,6 +347,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
                 : '${note['chapterIndex']}:${note['start']}:${note['end']}'
                       '${kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}',
             'payload': jsonEncode(note),
+            ..._queryFields(kind, note),
           },
         )
         .toList();
@@ -192,7 +357,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
         if ((await txn.query(
           'books',
           columns: ['id'],
-          where: 'id = ?',
+          where: 'id = ? AND is_hidden = 0',
           whereArgs: [bookId],
         )).isEmpty) {
           throw StateError('图书已移除，无法保存笔记');
@@ -212,7 +377,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
         }
         await batch.commit(noResult: true);
       }),
-    );
+    ).then((_) => _changes.add(null));
   }
 
   static Future<Directory> _defaultDirectory() async {
@@ -264,6 +429,16 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final result = _queue.then((_) => action());
     _queue = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
+  }
+
+  void _notifyChanges() {
+    if (_changes.isClosed) return;
+    try {
+      _changes.add(null);
+    } catch (_) {
+      // Persistence has already completed. A disposed observer must not make
+      // the caller believe that its write failed.
+    }
   }
 
   Book _book(Map<String, Object?> row) => Book(
@@ -337,6 +512,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
           await _cachePendingCovers();
           final rows = await _db.query(
             'books',
+            where: 'is_hidden = 0',
             orderBy:
                 'last_read_at IS NULL, last_read_at DESC, added_at DESC, title',
           );
@@ -360,6 +536,157 @@ class LocalBookshelfRepository implements BookshelfRepository {
     );
     return controller.stream;
   }
+
+  Future<List<Book>> _loadBooksForShelf() async {
+    await _cachePendingCovers();
+    final rows = await _db.query(
+      'books',
+      where: 'is_hidden = 0',
+      orderBy: 'last_read_at IS NULL, last_read_at DESC, added_at DESC, title',
+    );
+    return _booksWithTags(rows);
+  }
+
+  @override
+  Stream<List<ShelfEntry>> watchShelfEntries() {
+    late StreamController<List<ShelfEntry>> controller;
+    StreamSubscription<void>? subscription;
+    Future<void> pending = Future<void>.value();
+    void refresh() {
+      pending = pending.then((_) async {
+        try {
+          final books = await _loadBooksForShelf();
+          final rows = await _db.query(
+            'reader_notes',
+            columns: ['book_id', 'kind', 'note_key', 'created_at'],
+            orderBy: 'created_at DESC, note_key DESC',
+          );
+          final counts = <String, int>{};
+          final markers = <String, List<ShelfNoteMarker>>{};
+          for (final row in rows) {
+            final bookId = row['book_id'] as String;
+            counts[bookId] = (counts[bookId] ?? 0) + 1;
+            final list = markers.putIfAbsent(bookId, () => []);
+            if (list.length >= 4) continue;
+            try {
+              list.add(
+                ShelfNoteMarker(
+                  kind: ReaderNoteKind.values.byName(row['kind'] as String),
+                  noteKey: row['note_key'] as String,
+                  createdAt: row['created_at'] as int? ?? 0,
+                ),
+              );
+            } catch (_) {
+              // Ignore unknown legacy kinds in the visual aggregate.
+            }
+          }
+          if (!controller.isClosed) {
+            controller.add([
+              for (final book in books)
+                ShelfEntry(
+                  book: book,
+                  noteCount: counts[book.id] ?? 0,
+                  markers: List.unmodifiable(markers[book.id] ?? const []),
+                ),
+            ]);
+          }
+        } catch (error, stack) {
+          if (!controller.isClosed) controller.addError(error, stack);
+        }
+      });
+    }
+
+    controller = StreamController<List<ShelfEntry>>(
+      onListen: () {
+        subscription = _changes.stream.listen((_) => refresh());
+        refresh();
+      },
+      onCancel: () async => subscription?.cancel(),
+    );
+    return controller.stream;
+  }
+
+  @override
+  Future<List<ExcerptItem>> loadExcerpts() async {
+    final books = await _loadBooksForShelf();
+    final byId = {for (final book in books) book.id: book};
+    final rows = await _db.rawQuery(
+      "SELECT book_id, kind, note_key, payload, created_at, chapter_index, "
+      "start_offset, display_text, quote_text FROM reader_notes "
+      "WHERE kind IN ('underline', 'comment') "
+      "AND (display_text <> '' OR quote_text <> '') "
+      'ORDER BY created_at DESC, note_key DESC',
+    );
+    final result = <ExcerptItem>[];
+    for (final row in rows) {
+      final book = byId[row['book_id'] as String];
+      if (book == null) continue;
+      try {
+        final kind = ReaderNoteKind.values.byName(row['kind'] as String);
+        final payload =
+            jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+        result.add(
+          ExcerptItem(
+            ref: ReaderNoteRef(
+              bookId: book.id,
+              kind: kind,
+              noteKey: row['note_key'] as String,
+            ),
+            book: book,
+            chapterIndex: row['chapter_index'] as int? ?? 0,
+            startOffset: row['start_offset'] as int? ?? 0,
+            chapterTitle: payload['chapterTitle'] as String? ?? '',
+            createdAt: row['created_at'] as int? ?? 0,
+            quote: kind == ReaderNoteKind.comment
+                ? row['quote_text'] as String? ?? ''
+                : row['display_text'] as String? ?? '',
+            comment: kind == ReaderNoteKind.comment
+                ? row['display_text'] as String? ?? ''
+                : '',
+          ),
+        );
+      } catch (_) {
+        // Ignore malformed legacy rows without breaking the complete feed.
+      }
+    }
+    return result;
+  }
+
+  @override
+  Stream<List<ExcerptItem>> watchExcerpts() {
+    late StreamController<List<ExcerptItem>> controller;
+    StreamSubscription<void>? subscription;
+    Future<void> pending = Future<void>.value();
+    void refresh() {
+      pending = pending.then((_) async {
+        try {
+          final items = await loadExcerpts();
+          if (!controller.isClosed) controller.add(items);
+        } catch (error, stack) {
+          if (!controller.isClosed) controller.addError(error, stack);
+        }
+      });
+    }
+
+    controller = StreamController<List<ExcerptItem>>(
+      onListen: () {
+        subscription = _changes.stream.listen((_) => refresh());
+        refresh();
+      },
+      onCancel: () async => subscription?.cancel(),
+    );
+    return controller.stream;
+  }
+
+  @override
+  Future<void> deleteReaderNote(ReaderNoteRef ref) => _serial(() async {
+    await _db.delete(
+      'reader_notes',
+      where: 'book_id = ? AND kind = ? AND note_key = ?',
+      whereArgs: [ref.bookId, ref.kind.name, ref.noteKey],
+    );
+    _changes.add(null);
+  });
 
   Future<BookContent> _parse(Uint8List bytes, String name) =>
       parser is LocalBookParser
@@ -412,7 +739,15 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final id = sha256.convert(bytes).toString();
     final existing = await _db.query('books', where: 'id = ?', whereArgs: [id]);
     if (existing.isNotEmpty) {
-      return BookImportResult(book: _book(existing.first), isDuplicate: true);
+      final hidden = existing.first['is_hidden'] == 1;
+      if (!hidden || source == BookSource.builtIn) {
+        return BookImportResult(book: _book(existing.first), isDuplicate: true);
+      }
+      // An explicit user import restores a previously hidden bundled book.
+      await _db.transaction((txn) async {
+        await txn.delete('book_tags', where: 'book_id = ?', whereArgs: [id]);
+        await txn.delete('books', where: 'id = ?', whereArgs: [id]);
+      });
     }
     final content = await _parse(bytes, fileName);
     final cacheReady = await _writeCache(id, content);
@@ -449,6 +784,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
         'chapter': 0,
         'block': 0,
         'progress': 0.0,
+        'is_hidden': 0,
       };
       await _db.insert('books', row);
       _changes.add(null);
@@ -515,7 +851,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
             'progress': location.progress.clamp(0, 1),
             'last_read_at': DateTime.now().millisecondsSinceEpoch,
           },
-          where: 'id = ?',
+          where: 'id = ? AND is_hidden = 0',
           whereArgs: [bookId],
         );
         _changes.add(null);
@@ -523,20 +859,13 @@ class LocalBookshelfRepository implements BookshelfRepository {
 
   @override
   Future<void> removeBook(String bookId) => _serial(() async {
+    // Also repairs a database kept open across a development hot reload, where
+    // the normal versioned onUpgrade callback has not run yet.
+    await _ensureHiddenBooksSchema();
     final rows = await _db.query('books', where: 'id = ?', whereArgs: [bookId]);
     if (rows.isEmpty) return;
-    final file = File(
-      p.join(directory.path, rows.first['file_name'] as String),
-    );
-    if (await file.exists()) await file.delete();
-    final coverFileName = rows.first['cover_file_name'] as String?;
-    if (coverFileName != null) {
-      final cover = File(p.join(directory.path, coverFileName));
-      if (await cover.exists()) await cover.delete();
-    }
-    _memoryCache.remove(bookId);
-    final cache = Directory(p.join(directory.path, 'cache', bookId));
-    if (await cache.exists()) await cache.delete(recursive: true);
+    final row = rows.first;
+    final builtIn = row['source'] == BookSource.builtIn.name;
     await _db.transaction((txn) async {
       await txn.delete(
         'reader_notes',
@@ -544,9 +873,37 @@ class LocalBookshelfRepository implements BookshelfRepository {
         whereArgs: [bookId],
       );
       await txn.delete('book_tags', where: 'book_id = ?', whereArgs: [bookId]);
-      await txn.delete('books', where: 'id = ?', whereArgs: [bookId]);
+      if (builtIn) {
+        // Keep a tombstone so startup asset synchronization does not restore a
+        // bundled book that the user deliberately removed.
+        await txn.update(
+          'books',
+          {'is_hidden': 1, 'cache_ready': 0},
+          where: 'id = ?',
+          whereArgs: [bookId],
+        );
+      } else {
+        await txn.delete('books', where: 'id = ?', whereArgs: [bookId]);
+      }
     });
-    _changes.add(null);
+    // The transaction above is the success boundary. Everything below is
+    // cache invalidation or best-effort cleanup and cannot reverse the write.
+    _memoryCache.remove(bookId);
+    _notifyChanges();
+    try {
+      final file = File(p.join(directory.path, row['file_name'] as String));
+      if (await file.exists()) await file.delete();
+      final coverFileName = row['cover_file_name'] as String?;
+      if (coverFileName != null) {
+        final cover = File(p.join(directory.path, coverFileName));
+        if (await cover.exists()) await cover.delete();
+      }
+      final cache = Directory(p.join(directory.path, 'cache', bookId));
+      if (await cache.exists()) await cache.delete(recursive: true);
+    } catch (_) {
+      // The hidden/deleted database row prevents stale private files from
+      // resurfacing. Platform cleanup can reclaim them later.
+    }
   });
 
   @override
@@ -640,7 +997,7 @@ class LocalBookshelfRepository implements BookshelfRepository {
     final rows = await _db.query(
       'books',
       columns: ['id', 'file_name'],
-      where: 'format = ? AND cover_checked = 0',
+      where: 'format = ? AND cover_checked = 0 AND is_hidden = 0',
       whereArgs: [BookFormat.epub.name],
     );
     for (final row in rows) {

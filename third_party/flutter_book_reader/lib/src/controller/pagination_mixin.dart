@@ -202,11 +202,93 @@ mixin PaginationMixin on ReaderControllerBase, ChapterContentMixin {
     return pages.length - 1;
   }
 
-  /// 全书进度：章序 + 章内页占比。
+  int _canonicalLength(Iterable<ReaderBlock> blocks) {
+    var length = 0;
+    for (final block in blocks) {
+      final indent = block.isParagraphStart
+          ? config.indent.length.clamp(0, block.length)
+          : 0;
+      length += block.length - indent;
+    }
+    return length;
+  }
+
+  int _canonicalOffset(Iterable<ReaderBlock> blocks, int engineOffset) {
+    var engineStart = 0;
+    var canonicalStart = 0;
+    for (final block in blocks) {
+      final indent = block.isParagraphStart
+          ? config.indent.length.clamp(0, block.length)
+          : 0;
+      final contentLength = block.length - indent;
+      if (engineOffset < engineStart + block.length) {
+        return canonicalStart +
+            (engineOffset - engineStart - indent).clamp(0, contentLength);
+      }
+      engineStart += block.length;
+      canonicalStart += contentLength;
+    }
+    return canonicalStart;
+  }
+
+  double _progressForBlocks(
+    int chapterIdx,
+    Iterable<ReaderBlock> blocks,
+    int engineOffset,
+  ) {
+    if (chapterCount <= 0) return 0;
+    final materialized = blocks.toList(growable: false);
+    final length = _canonicalLength(materialized);
+    final offset = _canonicalOffset(materialized, engineOffset);
+    final fraction = length == 0 ? 0.0 : offset / length;
+    return ((chapterIdx + fraction) / chapterCount).clamp(0, 1);
+  }
+
+  /// 全书进度的唯一口径：章序 + 章内规范化字符偏移占比。
+  ///
+  /// 规范化偏移不计阅读器添加的首行缩进，因此不随字号、屏幕尺寸或分页变化。
+  double progressForOffset(int chapterIdx, int engineOffset) {
+    final body = bodyOf(chapterIdx);
+    if (body == null) {
+      return chapterCount <= 0 ? 0 : (chapterIdx / chapterCount).clamp(0, 1);
+    }
+    return _progressForBlocks(
+      chapterIdx,
+      chapterBlocks(body),
+      engineOffset,
+    );
+  }
+
+  /// 把章内规范化进度转换为阅读器字符偏移，用于全书进度跳转。
+  int offsetForChapterProgress(int chapterIdx, double progress) {
+    final body = bodyOf(chapterIdx);
+    if (body == null) return 0;
+    final blocks = chapterBlocks(body);
+    final target = (_canonicalLength(blocks) * progress.clamp(0, 1)).floor();
+    var engineStart = 0;
+    var canonicalStart = 0;
+    for (final block in blocks) {
+      final indent = block.isParagraphStart
+          ? config.indent.length.clamp(0, block.length)
+          : 0;
+      final contentLength = block.length - indent;
+      if (target < canonicalStart + contentLength) {
+        final within = target - canonicalStart;
+        return engineStart + (within == 0 ? 0 : indent + within);
+      }
+      engineStart += block.length;
+      canonicalStart += contentLength;
+    }
+    return engineStart;
+  }
+
+  /// 分页页脚也以该页页首字符偏移计算，不再使用页码估算。
   double progressFor(int chapterIdx, List<ReaderPage> pgs, int pageIdx) {
-    final double p = pgs.isEmpty
-        ? chapterIdx / chapterCount
-        : (chapterIdx + (pageIdx + 1) / pgs.length) / chapterCount;
-    return p.clamp(0, 1);
+    if (pgs.isEmpty) return progressForOffset(chapterIdx, 0);
+    return _progressForBlocks(
+      chapterIdx,
+      pgs.expand((page) => page),
+      startOffsetOfPageIn(pgs, pageIdx),
+    );
   }
 }

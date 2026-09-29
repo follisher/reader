@@ -28,7 +28,7 @@ mixin ChapterNavigationMixin
         normalized >= 1 ? 1 : (scaled - targetChapter).clamp(0.0, 1.0);
 
     final List<int> knownPageCounts = <int>[];
-    int? targetLength;
+    int? targetOffset;
     for (int chapter = 0; chapter < chapterCount; chapter++) {
       final String? body = bodyOf(chapter);
       if (body == null) continue;
@@ -36,9 +36,9 @@ mixin ChapterNavigationMixin
       if (chapterPages == null || chapterPages.isEmpty) continue;
       knownPageCounts.add(chapterPages.length);
       if (chapter == targetChapter) {
-        targetLength = chapterBlocks(body).fold<int>(
-          0,
-          (int length, ReaderBlock block) => length + block.length,
+        targetOffset = offsetForChapterProgress(
+          targetChapter,
+          chapterProgress,
         );
       }
     }
@@ -54,16 +54,13 @@ mixin ChapterNavigationMixin
     );
     final int page =
         normalized >= 1 ? totalPages : (normalized * totalPages).floor() + 1;
-    final int targetOffset =
-        targetLength == null ? 0 : (targetLength * chapterProgress).floor();
-
     String title = chapterTitleAt(targetChapter);
     BookTocEntry? subsection;
     void visit(List<BookTocEntry> entries, int depth) {
       for (final BookTocEntry entry in entries) {
         if (depth > 0 &&
             entry.chapterIndex == targetChapter &&
-            entry.charOffset <= targetOffset &&
+            entry.charOffset <= targetOffset! &&
             (subsection == null ||
                 entry.charOffset >= subsection!.charOffset)) {
           subsection = entry;
@@ -72,7 +69,7 @@ mixin ChapterNavigationMixin
       }
     }
 
-    if (targetLength != null) visit(manifest.toc, 0);
+    if (targetOffset != null) visit(manifest.toc, 0);
     if (subsection != null) title = subsection!.title;
     return ReaderSeekPreview(
       page: page,
@@ -97,10 +94,10 @@ mixin ChapterNavigationMixin
       loadChapter(targetChapter);
       return;
     }
-    final int chapterLength = chapterBlocks(
-      body,
-    ).fold<int>(0, (int length, ReaderBlock block) => length + block.length);
-    final int targetOffset = (chapterLength * chapterProgress).floor();
+    final int targetOffset = offsetForChapterProgress(
+      targetChapter,
+      chapterProgress,
+    );
     loadChapter(targetChapter, charOffset: targetOffset);
   }
 
@@ -179,5 +176,5 @@ mixin ChapterNavigationMixin
     }
   }
 
-  double get globalProgress => progressFor(chapterIndex, pages, pageIndex);
+  double get globalProgress => progressForOffset(chapterIndex, charOffset);
 }

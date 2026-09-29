@@ -8,6 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/reader.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
+const _previewCover = String.fromEnvironment('READER_PREVIEW_COVER');
+
 final book = Book(
   id: 'demo',
   title: '山间阅读札记',
@@ -15,6 +17,7 @@ final book = Book(
   format: BookFormat.txt,
   source: BookSource.imported,
   fileName: 'demo.txt',
+  coverPath: _previewCover == '' ? null : _previewCover,
   addedAt: DateTime(2026),
   location: const ReadingLocation(chapter: 1, block: 8, progress: .6),
 );
@@ -97,7 +100,7 @@ class FakeRepository implements BookshelfRepository {
 }
 
 final boundary = GlobalKey();
-Widget app(FakeRepository repo, Widget child) => ProviderScope(
+Widget app(BookshelfRepository repo, Widget child) => ProviderScope(
   child: ProviderScope(
     overrides: [bookshelfRepositoryProvider.overrideWithValue(repo)],
     child: MaterialApp(
@@ -184,7 +187,70 @@ void main() {
           .load();
     }
   });
-  testWidgets('shelf shows saved progress, search, and routes selected book', (
+  testWidgets(
+    'shelf shows three-column rows, search, and routes selected book',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final repo = FakeRepository();
+      repo.notes['${book.id}:${ReaderNoteKind.bookmark.name}'] = [
+        {
+          'chapterIndex': 1,
+          'charOffset': 2,
+          'chapterTitle': '第二章 山间',
+          'excerpt': '清晨的山谷',
+          'createdAt': 103,
+        },
+      ];
+      repo.notes['${book.id}:${ReaderNoteKind.underline.name}'] = [
+        for (var i = 0; i < 3; i++)
+          {
+            'chapterIndex': 1,
+            'start': 10 + i * 10,
+            'end': 18 + i * 10,
+            'text': '划线 $i',
+            'chapterTitle': '第二章 山间',
+            'createdAt': 102 - i,
+          },
+      ];
+      Book? selected;
+      await tester.pumpWidget(
+        app(repo, BookshelfView(onBookTap: (book) => selected = book)),
+      );
+      await tester.pumpAndSettle();
+      final shelf = tester.widget<ListView>(
+        find.byKey(const PageStorageKey('shelf-grid')),
+      );
+      expect(shelf.physics, isA<ClampingScrollPhysics>());
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.text('60.0%'), findsOneWidget);
+      await capture(tester, 'bookshelf');
+      await tester.tap(find.byKey(ValueKey(book.id)));
+      expect(selected?.id, book.id);
+      await tester.enterText(find.byType(TextField), '不存在');
+      await tester.pumpAndSettle();
+      expect(find.text('没有匹配的图书'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('empty excerpts hide the shelf switcher', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      app(FakeRepository(), BookshelfView(onBookTap: (_) {})),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('摘录'), findsNothing);
+    expect(find.text('我的书架'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('shelf switches to excerpts and opens exact note position', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -192,20 +258,96 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final repo = FakeRepository();
-    Book? selected;
+    repo.notes['${book.id}:${ReaderNoteKind.underline.name}'] = [
+      {
+        'chapterIndex': 1,
+        'start': 12,
+        'end': 20,
+        'text': '值得再次阅读的句子',
+        'chapterTitle': '第二章 山间',
+        'createdAt': 100,
+      },
+      {
+        'chapterIndex': 1,
+        'start': 30,
+        'end': 330,
+        'text': List.filled(40, '这是一段需要展开的长摘录').join(''),
+        'chapterTitle': '第二章 山间',
+        'createdAt': 99,
+      },
+    ];
+    ReaderOpenRequest? opened;
     await tester.pumpWidget(
-      app(repo, BookshelfView(onBookTap: (book) => selected = book)),
+      app(
+        repo,
+        BookshelfView(
+          onBookTap: (_) {},
+          onReaderOpen: (request) => opened = request,
+        ),
+      ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('已读 60%'), findsOneWidget);
-    await capture(tester, 'bookshelf');
-    await tester.tap(find.text(book.title));
-    expect(selected?.id, book.id);
-    await tester.enterText(find.byType(TextField), '不存在');
+    await tester.tap(find.text('摘录'));
     await tester.pumpAndSettle();
-    expect(find.text('没有匹配的图书'), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(find.text('值得再次阅读的句子'), findsOneWidget);
+    expect(find.text('划线'), findsNothing);
+    expect(find.byTooltip('展开'), findsOneWidget);
+    expect(
+      tester
+          .widgetList<ListView>(find.byType(ListView))
+          .any((list) => list.physics is ClampingScrollPhysics),
+      isTrue,
+    );
+    await tester.tap(find.text('最新'));
+    await tester.pumpAndSettle();
+    expect(find.text('最早'), findsOneWidget);
+    await capture(tester, 'excerpts-menu');
+    await tester.tap(find.text('最新').last);
+    await tester.pumpAndSettle();
+    await capture(tester, 'excerpts');
+    await tester.tap(find.byTooltip('更多操作').first);
+    await tester.pumpAndSettle();
+    expect(find.text('复制'), findsOneWidget);
+    expect(find.text('删除'), findsOneWidget);
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    expect(find.text('删除划线？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('值得再次阅读的句子'));
+    expect(opened?.book.id, book.id);
+    expect(opened?.chapterIndex, 1);
+    expect(opened?.charOffset, 12);
   });
+
+  testWidgets('deleting the last excerpt returns to shelf and hides switcher', (
+    tester,
+  ) async {
+    final repo = FakeRepository();
+    repo.notes['${book.id}:${ReaderNoteKind.underline.name}'] = [
+      {
+        'chapterIndex': 0,
+        'start': 1,
+        'end': 5,
+        'text': '唯一一条摘录',
+        'createdAt': 100,
+      },
+    ];
+    await tester.pumpWidget(app(repo, BookshelfView(onBookTap: (_) {})));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('摘录'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('我的书架'), findsOneWidget);
+    expect(find.text('摘录'), findsNothing);
+  });
+
   testWidgets(
     'reader restores block, preserves it on font change, navigates and saves',
     (tester) async {

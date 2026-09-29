@@ -6,6 +6,7 @@ class ReaderPalette {
   ReaderPalette._();
 
   static const Color background = Color(0xFFFFFFFF);
+  static const Color libraryBackground = Color(0xFFF3F3F3);
   static const Color card = Color(0xFFF7F7F7);
   static const Color sheet = Color(0xFFF0F0F0);
   static const Color accent = Color(0xFF000000);
@@ -18,8 +19,6 @@ class ReaderPalette {
   static const Color subheading = Color(0xFF424242);
   static const Color track = Color(0xFFE0E0E0);
   static const Color coverPlaceholder = Color(0xFFEAEAEA);
-  static const Color removeBackground = Color(0xFFE3E3E3);
-  static const Color removeForeground = Color(0xFF757575);
   static const Color hairline = Color(0x14000000);
   static const Color error = Color(0xFF424242);
 

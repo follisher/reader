@@ -106,6 +106,18 @@ class Book {
   DateTime? get recentReadAt => lastReadAt;
 }
 
+class ReaderOpenRequest {
+  const ReaderOpenRequest({
+    required this.book,
+    this.chapterIndex,
+    this.charOffset,
+  });
+
+  final Book book;
+  final int? chapterIndex;
+  final int? charOffset;
+}
+
 enum BookChapterKind { content, cover, titlePage, copyright, backCover }
 
 class BookChapter {

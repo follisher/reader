@@ -75,6 +75,15 @@ class _ReaderDemoState extends State<ReaderDemo> {
                     builder: (_) => ReaderView(book: book),
                   ),
                 ),
+                onReaderOpen: (request) => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => ReaderView(
+                      book: request.book,
+                      initialChapter: request.chapterIndex,
+                      initialCharOffset: request.charOffset,
+                    ),
+                  ),
+                ),
               ),
             ),
     );

@@ -23,10 +23,14 @@ class ReaderView extends ConsumerStatefulWidget {
     required this.book,
     this.source,
     this.controller,
+    this.initialChapter,
+    this.initialCharOffset,
   });
   final Book book;
   final engine.BookSource? source;
   final engine.BookReaderController? controller;
+  final int? initialChapter;
+  final int? initialCharOffset;
 
   @override
   ConsumerState<ReaderView> createState() => _ReaderViewState();
@@ -246,9 +250,9 @@ class _ReaderViewState extends ConsumerState<ReaderView>
   Future<void> _onSegmentTap(engine.ReaderSegmentTap segment) async {
     _controller.stopAutoTurn();
     try {
-      final comments = (await _notes.comments.load(
-        widget.book.id,
-      )).where(segment.contains).toList();
+      final comments = (await _notes.comments.load(widget.book.id))
+          .where(segment.contains)
+          .toList();
       if (!mounted) return;
       await showModalBottomSheet<void>(
         context: context,
@@ -357,6 +361,8 @@ class _ReaderViewState extends ConsumerState<ReaderView>
               config: _config,
               controller: _controller,
               progressStore: _progress!,
+              startChapter: widget.initialChapter,
+              startCharOffset: widget.initialCharOffset,
               bookmarkStore: _notes.bookmarks,
               underlineStore: _notes.underlines,
               commentStore: _notes.comments,

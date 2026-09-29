@@ -124,6 +124,14 @@ class _ReaderParagraphCommentsState extends State<ReaderParagraphComments> {
     ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   bool _busy = false;
   String? _error;
+
+  String _formatCreatedAt(int milliseconds) {
+    final date = DateTime.fromMillisecondsSinceEpoch(milliseconds).toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${date.year}-${two(date.month)}-${two(date.day)} '
+        '${two(date.hour)}:${two(date.minute)}:${two(date.second)}';
+  }
+
   Future<void> _delete(engine.Comment comment) async {
     setState(() {
       _busy = true;
@@ -171,7 +179,7 @@ class _ReaderParagraphCommentsState extends State<ReaderParagraphComments> {
                       return ListTile(
                         title: Text(c.text),
                         subtitle: Text(
-                          '原文：${c.quote}\n${DateTime.fromMillisecondsSinceEpoch(c.createdAt).toLocal()}',
+                          '原文：${c.quote}\n${_formatCreatedAt(c.createdAt)}',
                         ),
                         trailing: IconButton(
                           tooltip: '删除评论',
