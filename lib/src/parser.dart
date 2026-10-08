@@ -95,11 +95,11 @@ class LocalBookParser implements BookParser {
   }
 
   BookContent _epub(Uint8List bytes, String fileName) {
-    final directory = ZipDirectory.read(InputStream(bytes));
+    final directory = ZipDirectory()..read(InputMemoryStream(bytes));
     if (directory.fileHeaders.length > 10000 ||
         directory.fileHeaders.fold<int>(
               0,
-              (sum, entry) => sum + (entry.uncompressedSize ?? 0),
+              (sum, entry) => sum + entry.uncompressedSize,
             ) >
             maxExpandedBytes) {
       throw const FormatException('EPUB 资源数量或解压体积超过限制');
