@@ -30,6 +30,9 @@ class BookshelfView extends ConsumerStatefulWidget {
 
 class _BookshelfViewState extends ConsumerState<BookshelfView> {
   bool _busy = false;
+  bool _searching = false;
+  final _searchController = TextEditingController();
+  final _searchFocus = FocusNode();
   String _shelfQuery = '';
   String _excerptQuery = '';
   String? _selectedTag;
@@ -38,7 +41,6 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   _ExcerptSort _excerptSort = _ExcerptSort.newest;
   Future<List<ExcerptItem>>? _excerpts;
   StreamSubscription<List<ExcerptItem>>? _excerptSubscription;
-  bool _hasExcerpts = false;
   int _randomSeed = DateTime.now().millisecondsSinceEpoch;
   int _excerptVisibleCount = 50;
 
@@ -52,6 +54,8 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   @override
   void dispose() {
     _excerptSubscription?.cancel();
+    _searchController.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -252,8 +256,39 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     future.then(_acceptExcerpts, onError: _rejectExcerpts);
   }
 
+  void _openSearch() {
+    setState(() => _searching = true);
+    // Attach the input before requesting focus so mobile text input opens
+    // reliably when the navigation changes into the search field.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searching) _searchFocus.requestFocus();
+    });
+  }
+
+  void _cancelSearch() {
+    _searchFocus.unfocus();
+    _searchController.clear();
+    setState(() {
+      _searching = false;
+      _shelfQuery = '';
+      _excerptQuery = '';
+      _excerptVisibleCount = 50;
+    });
+  }
+
+  void _search(String value) {
+    setState(() {
+      final query = value.trim().toLowerCase();
+      if (_section == _ShelfSection.shelf) {
+        _shelfQuery = query;
+      } else {
+        _excerptQuery = query;
+        _excerptVisibleCount = 50;
+      }
+    });
+  }
+
   void _selectSection(_ShelfSection value) {
-    if (value == _ShelfSection.excerpts && !_hasExcerpts) return;
     if (_section == value) return;
     setState(() => _section = value);
   }
@@ -261,17 +296,13 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   void _acceptExcerpts(List<ExcerptItem> items) {
     if (!mounted) return;
     setState(() {
-      _hasExcerpts = items.isNotEmpty;
       _excerpts = Future.value(items);
-      if (!_hasExcerpts) _section = _ShelfSection.shelf;
     });
   }
 
   void _rejectExcerpts(Object error, StackTrace stack) {
     if (!mounted) return;
     setState(() {
-      _hasExcerpts = false;
-      _section = _ShelfSection.shelf;
       _excerpts = Future.value(const <ExcerptItem>[]);
     });
   }
@@ -376,22 +407,26 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     return Theme(
       data: readerTheme,
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         backgroundColor: readerTheme.brightness == Brightness.dark
             ? ReaderPalette.nightBackground
             : ReaderPalette.libraryBackground,
-        appBar: AppBar(
-          title: Text(_section == _ShelfSection.shelf ? '我的书架' : '我的摘录'),
+        body: SafeArea(
+          child: _section == _ShelfSection.shelf
+              ? _buildShelf()
+              : _buildExcerptFeed(),
         ),
-        body: _section == _ShelfSection.shelf
-            ? _buildShelf()
-            : _buildExcerptFeed(),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-        floatingActionButton: _hasExcerpts
-            ? _ShelfExcerptSwitcher(
-                section: _section,
-                onChanged: _selectSection,
-              )
-            : null,
+        floatingActionButton: _ShelfExcerptSwitcher(
+          section: _section,
+          onChanged: _selectSection,
+          searching: _searching,
+          controller: _searchController,
+          focusNode: _searchFocus,
+          onSearch: _openSearch,
+          onCancel: _cancelSearch,
+          onQueryChanged: _search,
+        ),
       ),
     );
   }
@@ -416,11 +451,6 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
               ],
             ),
           ),
-        _SearchField(
-          hint: '搜索书名或作者',
-          onChanged: (value) =>
-              setState(() => _shelfQuery = value.trim().toLowerCase()),
-        ),
         if (entries.hasValue)
           _TagFilterBar(
             tags: {
@@ -494,13 +524,6 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   Widget _buildExcerptFeed() {
     return Column(
       children: [
-        _SearchField(
-          hint: '搜索摘录、书名或作者',
-          onChanged: (value) => setState(() {
-            _excerptQuery = value.trim().toLowerCase();
-            _excerptVisibleCount = 50;
-          }),
-        ),
         FutureBuilder<List<ExcerptItem>>(
           future: _excerpts,
           builder: (context, snapshot) {
@@ -646,54 +669,6 @@ class _NoOverscrollBehavior extends MaterialScrollBehavior {
     Widget child,
     ScrollableDetails details,
   ) => child;
-}
-
-class _SearchField extends StatelessWidget {
-  const _SearchField({required this.hint, required this.onChanged});
-
-  final String hint;
-  final ValueChanged<String> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final dark = theme.brightness == Brightness.dark;
-    final surface = dark ? const Color(0xFF25262A) : Colors.white;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: surface,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: dark ? .18 : .06),
-              blurRadius: 10,
-              spreadRadius: -3,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: TextField(
-          textInputAction: TextInputAction.search,
-          decoration: InputDecoration(
-            filled: false,
-            prefixIcon: Icon(
-              Icons.search_rounded,
-              color: scheme.onSurface.withValues(alpha: .55),
-            ),
-            hintText: hint,
-            contentPadding: const EdgeInsets.symmetric(vertical: 15),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-          ),
-          onChanged: onChanged,
-        ),
-      ),
-    );
-  }
 }
 
 class _GridBookCard extends StatelessWidget {
@@ -1587,29 +1562,117 @@ class _ExcerptSelect<T> extends StatelessWidget {
 }
 
 class _ShelfExcerptSwitcher extends StatelessWidget {
-  const _ShelfExcerptSwitcher({required this.section, required this.onChanged});
+  const _ShelfExcerptSwitcher({
+    required this.section,
+    required this.onChanged,
+    required this.searching,
+    required this.controller,
+    required this.focusNode,
+    required this.onSearch,
+    required this.onCancel,
+    required this.onQueryChanged,
+  });
 
   final _ShelfSection section;
   final ValueChanged<_ShelfSection> onChanged;
 
+  final bool searching;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final VoidCallback onSearch;
+  final VoidCallback onCancel;
+  final ValueChanged<String> onQueryChanged;
+
+  Widget _button(String tooltip, IconData icon, VoidCallback onPressed) =>
+      IconButton(
+        tooltip: tooltip,
+        onPressed: onPressed,
+        style: IconButton.styleFrom(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          shape: const CircleBorder(),
+          fixedSize: const Size.square(44),
+        ),
+        icon: Icon(icon, size: 22),
+      );
+
   @override
-  Widget build(BuildContext context) => Material(
-    elevation: 6,
-    borderRadius: BorderRadius.circular(28),
-    color: Theme.of(context).colorScheme.surface,
-    child: Padding(
-      padding: const EdgeInsets.all(4),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _item(context, _ShelfSection.shelf, Icons.grid_view_rounded, '书架'),
-          _item(
-            context,
-            _ShelfSection.excerpts,
-            Icons.format_quote_rounded,
-            '摘录',
-          ),
-        ],
+  Widget build(BuildContext context) => SizedBox(
+    width: min(360, MediaQuery.sizeOf(context).width - 32),
+    child: Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(28),
+      color: Theme.of(context).colorScheme.surface,
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Row(
+          children: [
+            _button(
+              searching ? '取消搜索' : '返回',
+              searching ? Icons.close_rounded : Icons.arrow_back,
+              searching ? onCancel : () => Navigator.of(context).maybePop(),
+            ),
+            const SizedBox(width: 4),
+            if (searching)
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('bookshelf-navigation-search'),
+                  controller: controller,
+                  focusNode: focusNode,
+                  autofocus: true,
+                  textInputAction: TextInputAction.search,
+                  decoration: InputDecoration(
+                    hintText: section == _ShelfSection.shelf
+                        ? '搜索书名或作者'
+                        : '搜索摘录、书名或作者',
+                    filled: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                  onChanged: onQueryChanged,
+                  onSubmitted: (_) => focusNode.unfocus(),
+                ),
+              )
+            else ...[
+              Expanded(
+                child: _item(
+                  context,
+                  _ShelfSection.shelf,
+                  Icons.grid_view_rounded,
+                  '书架',
+                ),
+              ),
+              Expanded(
+                child: _item(
+                  context,
+                  _ShelfSection.excerpts,
+                  Icons.format_quote_rounded,
+                  '摘录',
+                ),
+              ),
+            ],
+            const SizedBox(width: 4),
+            _button(
+              '搜索',
+              Icons.search_rounded,
+              searching ? () => focusNode.unfocus() : onSearch,
+            ),
+          ],
+        ),
       ),
     ),
   );
@@ -1638,6 +1701,7 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
             borderRadius: BorderRadius.circular(24),
           ),
           child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon, size: 18, color: selected ? Colors.white : null),
               const SizedBox(width: 6),

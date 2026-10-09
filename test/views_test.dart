@@ -229,14 +229,82 @@ void main() {
       await capture(tester, 'bookshelf');
       await tester.tap(find.byKey(ValueKey(book.id)));
       expect(selected?.id, book.id);
-      await tester.enterText(find.byType(TextField), '不存在');
+      expect(find.byType(TextField), findsNothing);
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pumpAndSettle();
+      expect(find.text('书架'), findsNothing);
+      await tester.enterText(
+        find.byKey(const ValueKey('bookshelf-navigation-search')),
+        '不存在',
+      );
       await tester.pumpAndSettle();
       expect(find.text('没有匹配的图书'), findsOneWidget);
+      await tester.tap(find.byTooltip('取消搜索'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsNothing);
+      expect(find.text('书架'), findsOneWidget);
+      expect(find.byKey(ValueKey(book.id)), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets('empty excerpts hide the shelf switcher', (tester) async {
+  for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+    testWidgets('search focuses and follows the keyboard on $platform', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      tester.view.padding = const FakeViewPadding(bottom: 34);
+      tester.view.viewPadding = const FakeViewPadding(bottom: 34);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        app(
+          FakeRepository(),
+          Theme(
+            data: ThemeData(platform: platform),
+            child: BookshelfView(onBookTap: (_) {}),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final restingTop = tester.getTopLeft(find.byTooltip('搜索')).dy;
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pumpAndSettle();
+      final input = find.byKey(const ValueKey('bookshelf-navigation-search'));
+      final field = tester.widget<TextField>(input);
+      expect(field.focusNode!.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+      expect(field.controller!.selection.isCollapsed, isTrue);
+      expect(field.controller!.selection.baseOffset, 0);
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      tester.view.padding = const FakeViewPadding();
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(find.byTooltip('搜索')).dy, lessThan(restingTop));
+      expect(tester.getBottomLeft(input).dy, lessThanOrEqualTo(844 - 300));
+      expect(
+        tester.getBottomLeft(find.byTooltip('取消搜索')).dy,
+        lessThanOrEqualTo(844 - 300),
+      );
+      await tester.enterText(input, '山间');
+      await tester.pump();
+      expect(field.controller!.text, '山间');
+      await tester.tap(find.byTooltip('取消搜索'));
+      await tester.pumpAndSettle();
+      expect(field.focusNode!.hasFocus, isFalse);
+      expect(tester.testTextInput.isVisible, isFalse);
+      tester.view.viewInsets = const FakeViewPadding();
+      tester.view.padding = const FakeViewPadding(bottom: 34);
+      await tester.pumpAndSettle();
+      expect(find.text('书架'), findsOneWidget);
+      expect(tester.getTopLeft(find.byTooltip('搜索')).dy, restingTop);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('empty excerpts keep navigation and allow opening excerpts', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -245,9 +313,44 @@ void main() {
       app(FakeRepository(), BookshelfView(onBookTap: (_) {})),
     );
     await tester.pumpAndSettle();
-    expect(find.text('摘录'), findsNothing);
-    expect(find.text('我的书架'), findsOneWidget);
+    expect(find.text('摘录'), findsOneWidget);
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.byTooltip('返回'), findsOneWidget);
+    await tester.tap(find.text('摘录'));
+    await tester.pumpAndSettle();
+    expect(find.text('读到喜欢的句子时，可以添加划线或写下想法，它们会出现在这里。'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('bottom back button pops the bookshelf route', (tester) async {
+    await tester.pumpWidget(
+      app(
+        FakeRepository(),
+        Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => BookshelfView(onBookTap: (_) {}),
+                ),
+              ),
+              child: const Text('打开书架'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('打开书架'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BookshelfView), findsOneWidget);
+    expect(
+      tester.getCenter(find.byTooltip('返回')).dx,
+      lessThan(tester.getCenter(find.text('书架')).dx),
+    );
+    await tester.tap(find.byTooltip('返回'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BookshelfView), findsNothing);
+    expect(find.text('打开书架'), findsOneWidget);
   });
 
   testWidgets('shelf switches to excerpts and opens exact note position', (
@@ -290,6 +393,17 @@ void main() {
     await tester.tap(find.text('摘录'));
     await tester.pumpAndSettle();
     expect(find.text('值得再次阅读的句子'), findsOneWidget);
+    await tester.tap(find.byTooltip('搜索'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('bookshelf-navigation-search')),
+      '不存在',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('没有找到相关摘录。'), findsOneWidget);
+    await tester.tap(find.byTooltip('取消搜索'));
+    await tester.pumpAndSettle();
+    expect(find.text('值得再次阅读的句子'), findsOneWidget);
     expect(find.text('划线'), findsNothing);
     expect(find.byTooltip('展开'), findsOneWidget);
     expect(
@@ -320,7 +434,7 @@ void main() {
     expect(opened?.charOffset, 12);
   });
 
-  testWidgets('deleting the last excerpt returns to shelf and hides switcher', (
+  testWidgets('deleting the last excerpt keeps excerpt view and navigation', (
     tester,
   ) async {
     final repo = FakeRepository();
@@ -344,8 +458,8 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
     await tester.pumpAndSettle();
 
-    expect(find.text('我的书架'), findsOneWidget);
-    expect(find.text('摘录'), findsNothing);
+    expect(find.text('摘录'), findsOneWidget);
+    expect(find.text('读到喜欢的句子时，可以添加划线或写下想法，它们会出现在这里。'), findsOneWidget);
   });
 
   testWidgets(
