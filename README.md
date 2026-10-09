@@ -93,26 +93,87 @@ await repository.importBytes(
 
 `BookSource` 已预留 `builtIn`、`imported` 和 `downloaded`。模块当前不发网络请求，也不保存账号或授权状态。
 
-### 内置书籍标签
+### 分类查询与正文跳转
 
-演示应用使用 `example/assets/catalog.json` 管理内置书籍的默认标签。配置文件只负责声明资源和标签，应用启动时会将关系同步到本地 SQLite；用户界面目前只提供标签筛选，不提供标签编辑。
+主应用可以在未打开书架时读取某个分类。入口会先同步内置书籍，再查询本地书架；查询包含该标签下的内置、导入和下载图书，不包含已移除的书。读取或导入失败会抛出异常，调用方可显示重试。
 
-```json
-{
-  "version": 1,
-  "tags": {
-    "小说": { "color": "#D97706" }
-  },
-  "books": [
-    {
-      "file": "百年孤独.epub",
-      "tags": ["小说"]
-    }
-  ]
-}
+```dart
+final library = ref.read(readerLibraryProvider);
+final books = await library.loadBooksByTags(
+  BookTagsQuery(tags: [AppBookTags.fortune]), // 命理
+);
+
+// 点击查询结果直接打开正文，恢复阅读进度。
+await openReader(context, book: books.first);
 ```
 
-`file` 相对于 `assets/books/`，标签名称必须出现在对应书籍的 `tags` 数组中。修改清单后重新构建应用即可同步默认关系；阅读进度和笔记不会受到影响。
+实际列表需处理空结果后再取书籍。`openReader` 接收列表返回的 `Book`，无需自行拼接书名、文件路径或 ID；context 需位于已注入仓库的 ProviderScope 和 Navigator 内。该方法将当前仓库传入阅读页，支持局部 ProviderScope。宿主若使用自己的路由系统，也可直接构建 `ReaderView(book: book)`。
+
+标签由主仓库定义为 `CatalogTag` 常量（下文的 `AppBookTags`）。清单和查询共用这些常量，无需在 reader 中添加枚举，也不用在调用处手写标签名称。多个标签默认要求全部匹配；传 `match: BookTagMatch.any` 可改为任一匹配，空标签返回全部图书。
+
+需要自动更新的页面使用：
+
+```dart
+final books = ref.watch(booksByTagsProvider(
+  BookTagsQuery(tags: [AppBookTags.fortune, AppBookTags.ancient]),
+)); // AsyncValue<List<Book>>：处理 loading/error/data
+```
+
+书架的两个回调也可直接使用统一导航入口：
+
+```dart
+BookshelfView(
+  onBookTap: (book) => openReader(context, book: book),
+  onReaderOpen: (request) => openReaderRequest(context, request: request),
+)
+```
+
+### 外部使用书籍封面
+
+`BookCover` 复用书架的封面样式，默认不显示分类标签、阅读便签和进度，不需要注入仓库。传入查询得到的 `Book` 即可：
+
+```dart
+BookCover(
+  book: book,
+  onTap: () => openReader(context, book: book),
+)
+```
+
+默认大小为 110 × 162，父级 `SizedBox` 或网格约束可以调整大小。存在封面文件时显示图片，否则使用书名和作者生成的默认封面。`onTap`、`onLongPress` 可选；书架通过 `showProgress: true` 和 `markers` 保留原有进度与便签展示。
+
+### Dart 内置目录
+
+书籍目录和标签全部由主仓库维护，reader 只提供模型和查询接口（完整示例见 `example/lib/catalog.dart`）。在主仓库维护 `lib/pages/books/catalog.dart`：
+
+```dart
+import 'package:reader/reader.dart';
+
+abstract final class AppBookTags {
+  static const classic = CatalogTag(name: '经典', color: '#7C3AED');
+  static const fortune = CatalogTag(name: '命理', color: '#2563EB');
+  static const ancient = CatalogTag(name: '古籍', color: '#9C8F7D');
+  // 新增标签只需在主仓库继续定义常量。
+  static const history = CatalogTag(name: '历史', color: '#57715D');
+}
+
+const catalog = BookCatalog(books: [
+  CatalogBook(
+    assetPath: 'assets/books/紫微斗數全書卷一.txt',
+    tags: [AppBookTags.classic, AppBookTags.fortune, AppBookTags.ancient],
+  ),
+]);
+
+// 与 bookshelfRepositoryProvider 一起注入根作用域。
+readerCatalogProvider.overrideWithValue(catalog)
+```
+
+图书资源仍需在宿主 `pubspec.yaml` 声明。通过 `readerCatalogProvider` 注入 Dart 清单；不注入时不导入任何内置资源。模块不再读取 `catalog.json` 或扫描资源目录。主仓库已迁移为 `lib/pages/books/catalog.dart`，并在根 ProviderContainer 注入。目录同步会保留阅读进度和笔记，已移除的内置书籍不会自动恢复。
+
+以后新增书籍，只需在主仓库加入资源文件并将 `CatalogBook` 加入清单；新增标签，只需在主仓库定义新的 `CatalogTag` 常量并在对应书籍的 `tags` 中引用。目录与查询页面都导入这一个文件，不需要修改 reader。新增资源目录仍需在主仓库 `pubspec.yaml` 声明；如果已有 `assets/books/` 声明，往该目录增加文件无需逐一登记。
+
+标签名称是唯一标识，与现有 SQLite 标签关系兼容。同名常量视为同一标签；名称不能为空或带首尾空白，同名标签的颜色声明须一致，重复书籍资源路径也会在导入前报错。改标签显示名称视为更换标签，需同时更新主仓库中共用的常量；下次启动会同步新关系。
+
+若不使用 Riverpod，可创建 `ReaderLibrary(repository: repository, catalog: catalog)` 并调用相同方法。一个仓库复用一个实例；`initialize()` 可在启动时调用，同一实例的并发初始化共享任务，失败后可重试。修改目录后重新启动应用即可同步。
 
 ## 文件与安全边界
 

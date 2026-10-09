@@ -12,3 +12,7 @@ export 'src/html_reader_view.dart' show HtmlReaderView;
 export 'src/theme/reader_palette.dart' show ReaderPalette;
 export 'package:flutter_book_reader/flutter_book_reader.dart'
     show BookReaderController, BookManifest, ReaderConfig, FlipType;
+
+export 'src/catalog.dart';
+export 'src/navigation.dart';
+export 'src/widget/book_cover.dart' show BookCover;

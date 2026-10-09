@@ -123,6 +123,58 @@ Future<void> capture(WidgetTester tester, String name) async {
 }
 
 void main() {
+  testWidgets(
+    'reader navigation carries a page-scoped repository and request',
+    (tester) async {
+      final repository = FakeRepository();
+      late BuildContext pageContext;
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: ProviderScope(
+              overrides: [
+                bookshelfRepositoryProvider.overrideWithValue(repository),
+              ],
+              child: Builder(
+                builder: (context) {
+                  pageContext = context;
+                  return const Scaffold(body: Text('宿主分类列表'));
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      final closed = openReaderRequest(
+        pageContext,
+        request: ReaderOpenRequest(book: book, chapterIndex: 1, charOffset: 8),
+      );
+      await tester.pumpAndSettle();
+      final reader = tester.widget<ReaderView>(find.byType(ReaderView));
+      expect(reader.book, same(book));
+      expect(reader.initialChapter, 1);
+      expect(reader.initialCharOffset, 8);
+      expect(
+        ProviderScope.containerOf(
+          tester.element(find.byType(ReaderView)),
+        ).read(bookshelfRepositoryProvider),
+        same(repository),
+      );
+      Navigator.of(tester.element(find.byType(ReaderView))).pop();
+      await tester.pumpAndSettle();
+      await closed;
+      final reopened = openReader(pageContext, book: book);
+      await tester.pumpAndSettle();
+      final resumed = tester.widget<ReaderView>(find.byType(ReaderView));
+      expect(resumed.initialChapter, isNull);
+      expect(resumed.initialCharOffset, isNull);
+      Navigator.of(tester.element(find.byType(ReaderView))).pop();
+      await tester.pumpAndSettle();
+      await reopened;
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('toc selects only current subsection and jumps to its block', (
     tester,
   ) async {

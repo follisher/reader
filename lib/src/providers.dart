@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'catalog.dart';
 import 'models.dart';
 import 'repository.dart';
 
@@ -51,3 +52,22 @@ final shelfEntriesProvider = StreamProvider<List<ShelfEntry>>((ref) {
     return result;
   });
 }, dependencies: [bookshelfRepositoryProvider]);
+
+/// The host owns the Dart catalog. Without an override, no assets are imported.
+final readerCatalogProvider = Provider<BookCatalog>(
+  (ref) => const BookCatalog(books: []),
+  dependencies: const [],
+);
+
+final readerLibraryProvider = Provider<ReaderLibrary>(
+  (ref) => ReaderLibrary(
+    repository: ref.watch(bookshelfRepositoryProvider),
+    catalog: ref.watch(readerCatalogProvider),
+  ),
+  dependencies: [bookshelfRepositoryProvider, readerCatalogProvider],
+);
+
+final booksByTagsProvider = StreamProvider.family<List<Book>, BookTagsQuery>(
+  (ref, query) => ref.watch(readerLibraryProvider).watchBooksByTags(query),
+  dependencies: [readerLibraryProvider],
+);

@@ -3,6 +3,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:reader/reader.dart';
 
+import 'catalog.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ReaderDemo());
@@ -70,27 +72,19 @@ class _ReaderDemoState extends State<ReaderDemo> {
             )
           : Builder(
               builder: (context) => BookshelfView(
-                onBookTap: (book) => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ReaderView(book: book),
-                  ),
-                ),
-                onReaderOpen: (request) => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ReaderView(
-                      book: request.book,
-                      initialChapter: request.chapterIndex,
-                      initialCharOffset: request.charOffset,
-                    ),
-                  ),
-                ),
+                onBookTap: (book) => openReader(context, book: book),
+                onReaderOpen: (request) =>
+                    openReaderRequest(context, request: request),
               ),
             ),
     );
     return repo == null
         ? app
         : ProviderScope(
-            overrides: [bookshelfRepositoryProvider.overrideWithValue(repo)],
+            overrides: [
+              bookshelfRepositoryProvider.overrideWithValue(repo),
+              readerCatalogProvider.overrideWithValue(demoCatalog),
+            ],
             child: app,
           );
   }
