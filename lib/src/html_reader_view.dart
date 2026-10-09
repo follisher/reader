@@ -11,9 +11,14 @@ import 'repository.dart';
 import 'theme/reader_palette.dart';
 
 class HtmlReaderView extends ConsumerStatefulWidget {
-  const HtmlReaderView({super.key, required this.book});
+  const HtmlReaderView({
+    super.key,
+    required this.book,
+    this.followHostTheme = true,
+  });
 
   final Book book;
+  final bool followHostTheme;
 
   @override
   ConsumerState<HtmlReaderView> createState() => _HtmlReaderViewState();
@@ -497,7 +502,9 @@ class _HtmlReaderViewState extends ConsumerState<HtmlReaderView>
 
   @override
   Widget build(BuildContext context) {
-    final dark = _settings.dark;
+    final dark = widget.followHostTheme
+        ? Theme.of(context).brightness == Brightness.dark
+        : _settings.dark;
     final foreground = dark ? ReaderPalette.nightInk : ReaderPalette.ink;
     final titleColor = dark
         ? ReaderPalette.nightInk
@@ -786,20 +793,21 @@ class _HtmlReaderViewState extends ConsumerState<HtmlReaderView>
                                         onPressed: _toc,
                                         icon: const Icon(Icons.list),
                                       ),
-                                      IconButton(
-                                        tooltip: dark ? '日间模式' : '夜间模式',
-                                        icon: Icon(
-                                          dark
-                                              ? Icons.light_mode_outlined
-                                              : Icons.dark_mode_outlined,
-                                        ),
-                                        onPressed: () => _changeSettings(
-                                          _settings.copyWith(
-                                            fontSize: _settings.fontSize,
-                                            dark: !dark,
+                                      if (!widget.followHostTheme)
+                                        IconButton(
+                                          tooltip: dark ? '日间模式' : '夜间模式',
+                                          icon: Icon(
+                                            dark
+                                                ? Icons.light_mode_outlined
+                                                : Icons.dark_mode_outlined,
+                                          ),
+                                          onPressed: () => _changeSettings(
+                                            _settings.copyWith(
+                                              fontSize: _settings.fontSize,
+                                              dark: !dark,
+                                            ),
                                           ),
                                         ),
-                                      ),
                                       Expanded(
                                         child: Text(
                                           '$currentPage/$totalPages · ${(displayedProgress * 100).round()}%',
@@ -813,7 +821,9 @@ class _HtmlReaderViewState extends ConsumerState<HtmlReaderView>
                                                 _settings.copyWith(
                                                   fontSize:
                                                       _settings.fontSize - 2,
-                                                  dark: dark,
+                                                  dark: widget.followHostTheme
+                                                      ? _settings.dark
+                                                      : dark,
                                                 ),
                                               )
                                             : null,
@@ -826,7 +836,9 @@ class _HtmlReaderViewState extends ConsumerState<HtmlReaderView>
                                                 _settings.copyWith(
                                                   fontSize:
                                                       _settings.fontSize + 2,
-                                                  dark: dark,
+                                                  dark: widget.followHostTheme
+                                                      ? _settings.dark
+                                                      : dark,
                                                 ),
                                               )
                                             : null,

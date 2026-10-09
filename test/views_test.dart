@@ -319,10 +319,19 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      final navigation = find.byKey(
+        const ValueKey('bookshelf-navigation-decoration'),
+      );
+      final restingSize = tester.getSize(navigation);
       final restingTop = tester.getTopLeft(find.byTooltip('搜索')).dy;
       await tester.tap(find.byTooltip('搜索'));
       await tester.pumpAndSettle();
       final input = find.byKey(const ValueKey('bookshelf-navigation-search'));
+      expect(tester.getSize(navigation), restingSize);
+      expect(
+        tester.getCenter(input).dy,
+        closeTo(tester.getCenter(navigation).dy, .01),
+      );
       final field = tester.widget<TextField>(input);
       expect(field.focusNode!.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isTrue);
@@ -332,6 +341,11 @@ void main() {
       tester.view.viewInsets = const FakeViewPadding(bottom: 300);
       tester.view.padding = const FakeViewPadding();
       await tester.pumpAndSettle();
+      expect(tester.getSize(navigation), restingSize);
+      expect(
+        tester.getCenter(input).dy,
+        closeTo(tester.getCenter(navigation).dy, .01),
+      );
       expect(tester.getTopLeft(find.byTooltip('搜索')).dy, lessThan(restingTop));
       expect(tester.getBottomLeft(input).dy, lessThanOrEqualTo(844 - 300));
       expect(
@@ -349,6 +363,7 @@ void main() {
       tester.view.padding = const FakeViewPadding(bottom: 34);
       await tester.pumpAndSettle();
       expect(find.text('书架'), findsOneWidget);
+      expect(tester.getSize(navigation), restingSize);
       expect(tester.getTopLeft(find.byTooltip('搜索')).dy, restingTop);
       expect(tester.takeException(), isNull);
     });
@@ -370,7 +385,7 @@ void main() {
     expect(find.byTooltip('返回'), findsOneWidget);
     await tester.tap(find.text('摘录'));
     await tester.pumpAndSettle();
-    expect(find.text('读到喜欢的句子时，可以添加划线或写下想法，它们会出现在这里。'), findsOneWidget);
+    expect(find.text('还没有摘录'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
@@ -452,7 +467,7 @@ void main() {
       '不存在',
     );
     await tester.pumpAndSettle();
-    expect(find.text('没有找到相关摘录。'), findsOneWidget);
+    expect(find.text('没有匹配的摘录'), findsOneWidget);
     await tester.tap(find.byTooltip('取消搜索'));
     await tester.pumpAndSettle();
     expect(find.text('值得再次阅读的句子'), findsOneWidget);
@@ -511,7 +526,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('摘录'), findsOneWidget);
-    expect(find.text('读到喜欢的句子时，可以添加划线或写下想法，它们会出现在这里。'), findsOneWidget);
+    expect(find.text('还没有摘录'), findsOneWidget);
   });
 
   testWidgets(
@@ -522,7 +537,9 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final repo = FakeRepository();
-      await tester.pumpWidget(app(repo, HtmlReaderView(book: book)));
+      await tester.pumpWidget(
+        app(repo, HtmlReaderView(book: book, followHostTheme: false)),
+      );
       await tester.pumpAndSettle();
       expect(find.textContaining('段落 1-8', findRichText: true), findsWidgets);
       await capture(tester, 'reader');

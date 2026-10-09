@@ -7,12 +7,20 @@ import 'reader_view.dart';
 
 /// Opens a list's Book directly, restoring its saved reading position.
 /// Pass an excerpt's ReaderOpenRequest to [openReaderRequest] for positioning.
-Future<void> openReader(BuildContext context, {required Book book}) =>
-    openReaderRequest(context, request: ReaderOpenRequest(book: book));
+Future<void> openReader(
+  BuildContext context, {
+  required Book book,
+  bool followHostTheme = true,
+}) => openReaderRequest(
+  context,
+  request: ReaderOpenRequest(book: book),
+  followHostTheme: followHostTheme,
+);
 
 Future<void> openReaderRequest(
   BuildContext context, {
   required ReaderOpenRequest request,
+  bool followHostTheme = true,
 }) {
   final repository = ProviderScope.containerOf(
     context,
@@ -25,6 +33,7 @@ Future<void> openReaderRequest(
         overrides: [bookshelfRepositoryProvider.overrideWithValue(repository)],
         child: ReaderView(
           book: request.book,
+          followHostTheme: followHostTheme,
           initialChapter: request.chapterIndex,
           initialCharOffset: request.charOffset,
         ),

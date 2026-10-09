@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:ui' show ImageFilter;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -528,14 +529,36 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                 items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
               }
               if (items.isEmpty) {
+                final empty = snapshot.data!.isEmpty;
                 return Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Text(
-                      snapshot.data!.isEmpty
-                          ? '读到喜欢的句子时，可以添加划线或写下想法，它们会出现在这里。'
-                          : '没有找到相关摘录。',
-                      textAlign: TextAlign.center,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32,
+                      vertical: 24,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          empty ? '还没有摘录' : '没有匹配的摘录',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          empty
+                              ? '阅读时长按选中文字，添加划线或评论。\n保存的内容会汇集在这里。'
+                              : '试试其他关键词，或切换图书筛选。',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurface.withValues(alpha: .6),
+                                height: 1.6,
+                              ),
+                        ),
+                      ],
                     ),
                   ),
                 );
@@ -1186,94 +1209,164 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
       IconButton(
         tooltip: tooltip,
         onPressed: onPressed,
+        constraints: const BoxConstraints.tightFor(width: 34, height: 34),
         style: IconButton.styleFrom(
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
           shape: const CircleBorder(),
-          fixedSize: const Size.square(44),
+          fixedSize: const Size.square(34),
+          minimumSize: const Size.square(34),
+          padding: const EdgeInsets.all(6),
+          visualDensity: VisualDensity.standard,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         icon: Icon(icon, size: 22),
       );
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-    width: min(360, MediaQuery.sizeOf(context).width - 32),
-    child: Material(
-      elevation: 6,
-      borderRadius: BorderRadius.circular(28),
-      color: Theme.of(context).colorScheme.surface,
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Row(
-          children: [
-            _button(
-              searching ? '取消搜索' : '返回',
-              searching ? Icons.close_rounded : Icons.arrow_back,
-              searching ? onCancel : () => Navigator.of(context).maybePop(),
-            ),
-            const SizedBox(width: 4),
-            if (searching)
-              Expanded(
-                child: TextField(
-                  key: const ValueKey('bookshelf-navigation-search'),
-                  controller: controller,
-                  focusNode: focusNode,
-                  autofocus: true,
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    hintText: section == _ShelfSection.shelf
-                        ? '搜索书名或作者'
-                        : '搜索摘录、书名或作者',
-                    filled: true,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return SizedBox(
+      width: min(286, MediaQuery.sizeOf(context).width - 32),
+      height: 46,
+      child: DecoratedBox(
+        key: const ValueKey('bookshelf-navigation-decoration'),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: dark ? 0 : .18),
+          border: Border.all(
+            color: Colors.black,
+            width: 4,
+            strokeAlign: BorderSide.strokeAlignOutside,
+          ),
+          borderRadius: BorderRadius.circular(25),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(25),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+            child: ColoredBox(
+              color: Colors.white.withValues(alpha: dark ? .1 : .62),
+              child: Material(
+                color: Colors.transparent,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: searching ? 6 : 8,
+                    vertical: 5,
                   ),
-                  onChanged: onQueryChanged,
-                  onSubmitted: (_) => focusNode.unfocus(),
-                ),
-              )
-            else ...[
-              Expanded(
-                child: _item(
-                  context,
-                  _ShelfSection.shelf,
-                  Icons.grid_view_rounded,
-                  '书架',
+                  child: _content(context),
                 ),
               ),
-              Expanded(
-                child: _item(
-                  context,
-                  _ShelfSection.excerpts,
-                  Icons.format_quote_rounded,
-                  '摘录',
-                ),
-              ),
-            ],
-            const SizedBox(width: 4),
-            _button(
-              '搜索',
-              Icons.search_rounded,
-              searching ? () => focusNode.unfocus() : onSearch,
             ),
-          ],
+          ),
         ),
       ),
-    ),
+    );
+  }
+
+  Widget _content(BuildContext context) => Row(
+    children: [
+      _button(
+        searching ? '取消搜索' : '返回',
+        searching ? Icons.close_rounded : Icons.arrow_back,
+        searching ? onCancel : () => Navigator.of(context).maybePop(),
+      ),
+      SizedBox(width: searching ? 8 : 10),
+      if (searching)
+        Expanded(
+          child: Center(
+            child: SizedBox(
+              height: 34,
+              child: TextField(
+                textAlignVertical: TextAlignVertical.center,
+                key: const ValueKey('bookshelf-navigation-search'),
+                controller: controller,
+                focusNode: focusNode,
+                autofocus: true,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText: section == _ShelfSection.shelf
+                      ? '搜索书名或作者'
+                      : '搜索摘录、书名或作者',
+                  hintStyle: const TextStyle(fontSize: 12),
+                  filled: true,
+                  isDense: true,
+                  constraints: const BoxConstraints.tightFor(height: 34),
+                  contentPadding: const EdgeInsets.only(top:8),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+                onChanged: onQueryChanged,
+                onSubmitted: (_) => focusNode.unfocus(),
+              ),
+            ),
+          ),
+        )
+      else
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final itemWidth = (constraints.maxWidth - 10) / 2;
+              return Stack(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _item(
+                          context,
+                          _ShelfSection.shelf,
+                          Icons.grid_view_rounded,
+                          '书架',
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _item(
+                          context,
+                          _ShelfSection.excerpts,
+                          Icons.format_quote_rounded,
+                          '摘录',
+                        ),
+                      ),
+                    ],
+                  ),
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 120),
+                    curve: Curves.easeOutCubic,
+                    left: section == _ShelfSection.shelf ? 0 : itemWidth + 10,
+                    top: 1,
+                    width: itemWidth,
+                    height: 34,
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.black, width: 1.5),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      SizedBox(width: searching ? 8 : 10),
+      _button(
+        '搜索',
+        Icons.search_rounded,
+        searching ? () => focusNode.unfocus() : onSearch,
+      ),
+    ],
   );
 
   Widget _item(
@@ -1288,28 +1381,37 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
       selected: selected,
       label: label,
       child: InkWell(
-        borderRadius: BorderRadius.circular(24),
+        borderRadius: BorderRadius.circular(16),
         onTap: () => onChanged(value),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 11),
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOutCubic,
+          height: 34,
+          margin: const EdgeInsets.symmetric(vertical: 1),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: selected
-                ? Theme.of(context).colorScheme.primary
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(24),
+            color: selected ? Colors.black : Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 18, color: selected ? Colors.white : null),
-              const SizedBox(width: 6),
+              Icon(
+                icon,
+                size: 22,
+                color: selected ? Colors.white : const Color(0xFF111111),
+              ),
+              const SizedBox(width: 5),
               Text(
                 label,
-                style: TextStyle(
-                  color: selected ? Colors.white : null,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                ),
+                style:
+                    const TextStyle(
+                      fontSize: 13,
+                      height: 1,
+                      fontWeight: FontWeight.w500,
+                    ).copyWith(
+                      color: selected ? Colors.white : const Color(0xFF111111),
+                    ),
               ),
             ],
           ),

@@ -25,8 +25,12 @@ class ReaderView extends ConsumerStatefulWidget {
     this.controller,
     this.initialChapter,
     this.initialCharOffset,
+    this.followHostTheme = true,
   });
   final Book book;
+
+  /// Follow the host Material theme on entry and when its brightness changes.
+  final bool followHostTheme;
   final engine.BookSource? source;
   final engine.BookReaderController? controller;
   final int? initialChapter;
@@ -42,6 +46,10 @@ class _ReaderViewState extends ConsumerState<ReaderView>
   late final engine.BookSource _source;
   late final engine.BookReaderController _controller;
   final _config = engine.ReaderConfig();
+  engine.ReaderTheme _preferredTheme = engine.ReaderTheme.white;
+  String _effectiveThemeAlias = engine.ReaderTheme.white.alias;
+  Brightness _hostBrightness = Brightness.light;
+  bool _applyingHostTheme = false;
   late final RepositoryReaderNotes _notes;
   final _commentsRefresh = ValueNotifier<int>(0);
   Object? _notesError;
@@ -70,6 +78,41 @@ class _ReaderViewState extends ConsumerState<ReaderView>
     _load();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final brightness = Theme.of(context).brightness;
+    if (_hostBrightness != brightness) {
+      _hostBrightness = brightness;
+      if (_loaded) _applyHostTheme();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ReaderView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_loaded && oldWidget.followHostTheme != widget.followHostTheme) {
+      _applyHostTheme();
+    }
+  }
+
+  void _applyHostTheme() {
+    final theme = widget.followHostTheme
+        ? _hostBrightness == Brightness.dark
+              ? engine.ReaderTheme.night
+              : _preferredTheme.isDark
+              ? engine.ReaderTheme.white
+              : _preferredTheme
+        : _preferredTheme;
+    _applyingHostTheme = true;
+    try {
+      _config.setTheme(theme);
+      _effectiveThemeAlias = theme.alias;
+    } finally {
+      _applyingHostTheme = false;
+    }
+  }
+
   Future<void> _load() async {
     try {
       final values = await Future.wait<Object>([
@@ -81,18 +124,17 @@ class _ReaderViewState extends ConsumerState<ReaderView>
         throw const FormatException('这本书没有可阅读的章节');
       }
       final settings = values.first as ReaderSettings;
+      _preferredTheme = settings.dark
+          ? engine.ReaderTheme.night
+          : engine.ReaderTheme.fromAlias(settings.theme);
       while (_config.fontSize < settings.fontSize.round().clamp(14, 32)) {
         _config.increaseFont();
       }
       while (_config.fontSize > settings.fontSize.round().clamp(14, 32)) {
         _config.decreaseFont();
       }
+      _applyHostTheme();
       _config
-        ..setTheme(
-          settings.dark
-              ? engine.ReaderTheme.night
-              : engine.ReaderTheme.fromAlias(settings.theme),
-        )
         ..setFlipType(
           engine.FlipType.values.firstWhere(
             (v) => v.name == settings.flipMode,
@@ -135,8 +177,8 @@ class _ReaderViewState extends ConsumerState<ReaderView>
 
   ReaderSettings _settings() => ReaderSettings(
     fontSize: _config.fontSize,
-    dark: _config.theme.isDark,
-    theme: _config.theme.alias,
+    dark: _preferredTheme.isDark,
+    theme: _preferredTheme.alias,
     flipMode: _config.flipType.name,
     lineHeight: _config.lineHeight,
     paragraphSpacing: _config.paragraphSpacing,
@@ -147,6 +189,11 @@ class _ReaderViewState extends ConsumerState<ReaderView>
   );
 
   void _settingsChanged() {
+    if (_applyingHostTheme) return;
+    if (_config.theme.alias != _effectiveThemeAlias) {
+      _preferredTheme = _config.theme;
+      _effectiveThemeAlias = _config.theme.alias;
+    }
     _settingsTimer?.cancel();
     _settingsTimer = Timer(const Duration(milliseconds: 400), _saveSettings);
   }
@@ -250,9 +297,9 @@ class _ReaderViewState extends ConsumerState<ReaderView>
   Future<void> _onSegmentTap(engine.ReaderSegmentTap segment) async {
     _controller.stopAutoTurn();
     try {
-      final comments = (await _notes.comments.load(widget.book.id))
-          .where(segment.contains)
-          .toList();
+      final comments = (await _notes.comments.load(
+        widget.book.id,
+      )).where(segment.contains).toList();
       if (!mounted) return;
       await showModalBottomSheet<void>(
         context: context,
@@ -307,7 +354,10 @@ class _ReaderViewState extends ConsumerState<ReaderView>
     );
     // Replace to prevent the hidden text reader from overwriting HTML progress.
     await Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(builder: (_) => HtmlReaderView(book: book)),
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            HtmlReaderView(book: book, followHostTheme: widget.followHostTheme),
+      ),
     );
   }
 
