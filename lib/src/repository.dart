@@ -756,8 +756,8 @@ class LocalBookshelfRepository
       throw const FormatException('图书超过 50 MB 导入上限');
     }
     final extension = p.extension(fileName).toLowerCase();
-    if (extension != '.txt' && extension != '.epub') {
-      throw const FormatException('请选择 EPUB 或 TXT 文件');
+    if (extension != '.txt' && extension != '.epub' && extension != '.md') {
+      throw const FormatException('请选择 EPUB、TXT 或 Markdown（MD）文件');
     }
     final id = sha256.convert(bytes).toString();
     final existing = await _db.query('books', where: 'id = ?', whereArgs: [id]);

@@ -84,11 +84,12 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       final files = await openFiles(
         acceptedTypeGroups: [
           const XTypeGroup(
-            label: 'TXT / EPUB',
-            extensions: ['txt', 'epub'],
+            label: 'TXT / EPUB / Markdown',
+            extensions: ['txt', 'epub', 'md'],
             uniformTypeIdentifiers: [
               'public.plain-text',
               'org.idpf.epub-container',
+              'public.text'
             ],
           ),
         ],
@@ -97,9 +98,9 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       for (final file in files) {
         try {
           final name = file.name.toLowerCase();
-          if (!name.endsWith('.txt') && !name.endsWith('.epub')) {
-            throw const FormatException('请选择 UTF-8 TXT 或 EPUB 文件');
-          }
+          if (!name.endsWith('.txt') && !name.endsWith('.epub') &&
+              !file.name.toLowerCase().endsWith('.md')) {
+            throw const FormatException('请选择 UTF-8 TXT, Markdown（MD）或 EPUB 文件');
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
           }
@@ -1299,7 +1300,7 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
                   filled: true,
                   isDense: true,
                   constraints: const BoxConstraints.tightFor(height: 34),
-                  contentPadding: const EdgeInsets.only(top:8),
+                  contentPadding: const EdgeInsets.only(top: 8),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
                     borderSide: BorderSide.none,
@@ -1455,7 +1456,7 @@ class _ShelfEmpty extends StatelessWidget {
           ),
           if (allEmpty) ...[
             const SizedBox(height: 12),
-            const Text('支持导入 UTF-8 TXT / EPUB，导入后可离线阅读'),
+            const Text('支持导入 UTF-8 TXT / EPUB 和 Markdown，导入后可离线阅读'),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: busy ? null : onImport,

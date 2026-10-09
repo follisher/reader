@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-enum BookFormat { txt, epub }
+enum BookFormat { txt, epub, md }
 
 enum BookSource { imported, builtIn, downloaded }
 

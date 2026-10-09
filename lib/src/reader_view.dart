@@ -450,6 +450,38 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
               onClose: _close,
               onTextAction: _onTextAction,
             ),
+            AnimatedBuilder(
+              animation: _controller,
+              builder: (context, _) {
+                if (!_controller.isMenuVisible ||
+                    _controller.isMenuPanelExpanded) {
+                  return const SizedBox.shrink();
+                }
+                return Positioned(
+                  top: MediaQuery.paddingOf(context).top + 56,
+                  right: 12,
+                  child: Material(
+                    borderRadius: BorderRadius.circular(12),
+                    color: _config.theme.panelColor,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if ((widget.book.format == BookFormat.epub ||
+                                widget.book.format == BookFormat.md) &&
+                            widget.source == null)
+                          TextButton(
+                            onPressed: _openHtml,
+                            style: TextButton.styleFrom(
+                              foregroundColor: _config.theme.textColor,
+                            ),
+                            child: const Text('图文阅读'),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
             if (_saveError != null || _notesError != null)
               Positioned(
                 top: 100,
