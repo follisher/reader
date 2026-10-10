@@ -4,7 +4,8 @@ export 'src/models.dart';
 export 'src/parser.dart' show BookParser, LocalBookParser;
 export 'src/repository.dart';
 export 'src/providers.dart';
-export 'src/bookshelf_view.dart' show BookshelfView;
+export 'src/bookshelf_view.dart'
+    show BookshelfView, BookshelfLayout, BookshelfLayoutControlsBuilder;
 export 'src/reader_view.dart';
 
 export 'src/book_reader_adapter.dart' show RepositoryBookSource;
@@ -14,4 +15,8 @@ export 'package:flutter_book_reader/flutter_book_reader.dart'
 
 export 'src/catalog.dart';
 export 'src/navigation.dart';
-export 'src/widget/book_cover.dart' show BookCover;
+export 'src/widget/book_cover.dart' show BookCover, RepositoryBookCover;
+
+export 'src/book_layout.dart' show BookLayout, BookLayoutRepository;
+
+export 'src/cover_pagination.dart' show BookCoverPagination;

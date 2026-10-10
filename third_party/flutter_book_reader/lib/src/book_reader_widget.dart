@@ -60,6 +60,7 @@ class BookReader extends StatefulWidget {
     this.commentsRefresh,
     this.controller,
     this.titlePageBuilder,
+    this.catalogCoverBuilder,
     this.battery,
     this.showSystemBarsWithMenu = true,
     this.enableTextSelection = true,
@@ -69,6 +70,9 @@ class BookReader extends StatefulWidget {
     this.chapterEndBuilder,
     this.chapterEndReserve = 96,
   });
+
+  /// Optional host artwork for the cover displayed in the catalog sheet.
+  final WidgetBuilder? catalogCoverBuilder;
 
   /// 书籍数据源
   final BookSource source;
@@ -502,6 +506,7 @@ class _BookReaderState extends State<BookReader>
                 child: ColoredBox(
                   color: _config.theme.paperColor,
                   child: CatalogSheet(
+                    coverBuilder: widget.catalogCoverBuilder,
                     bookTitle: c.manifest.title,
                     author: c.manifest.author,
                     intro: c.manifest.intro,

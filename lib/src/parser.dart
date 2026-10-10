@@ -5,6 +5,7 @@ import 'package:archive/archive.dart';
 import 'package:html/parser.dart' as html;
 import 'package:html/dom.dart' as dom;
 import 'package:path/path.dart' as p;
+import 'package:markdown/markdown.dart' as md;
 import 'package:xml/xml.dart';
 
 import 'models.dart';
@@ -30,8 +31,9 @@ class LocalBookParser implements BookParser {
     }
     final ext = p.extension(fileName).toLowerCase();
     if (ext == '.txt') return _text(bytes, fileName);
+    if (ext == '.md') return _markdown(bytes, fileName);
     if (ext == '.epub') return _epub(bytes, fileName);
-    throw const FormatException('目前支持 EPUB 和 TXT 文件');
+    throw const FormatException('目前支持 EPUB、TXT 和 Markdown（MD）文件');
   }
 
   BookContent _text(Uint8List bytes, String fileName) {
@@ -92,6 +94,75 @@ class LocalBookParser implements BookParser {
       if (blocks.isNotEmpty) flush();
     }
     if (chapters.isEmpty) throw const FormatException('这本书没有可阅读的正文');
+    return MemoryBookContent(title: title, author: '', chapters: chapters);
+  }
+
+  BookContent _markdown(Uint8List bytes, String fileName) {
+    String text;
+    try {
+      text = utf8.decode(bytes).replaceFirst('\uFEFF', '');
+    } on FormatException {
+      throw const FormatException('Markdown 请使用 UTF-8 编码保存后再导入');
+    }
+    final fragment = html.parseFragment(
+      md.markdownToHtml(text, extensionSet: md.ExtensionSet.gitHubFlavored),
+    );
+    // Imported documents cannot execute scripts or load external resources.
+    for (final node in fragment.querySelectorAll(
+      'script,style,iframe,object,embed,link,meta',
+    )) {
+      node.remove();
+    }
+    for (final element in fragment.querySelectorAll('*')) {
+      element.attributes.removeWhere(
+        (name, _) => name.toString().toLowerCase().startsWith('on'),
+      );
+      for (final attr in ['href', 'src']) {
+        final value = element.attributes[attr];
+        if (value == null) continue;
+        final uri = Uri.tryParse(value);
+        if (uri == null ||
+            (uri.hasScheme && uri.scheme != 'https' && uri.scheme != 'http')) {
+          element.attributes.remove(attr);
+        }
+      }
+      if (element.localName == 'img') {
+        // A standalone MD import has no accompanying image resource bundle.
+        element.replaceWith(
+          dom.Element.tag('p')
+            ..text = '【图片：${element.attributes['alt'] ?? '未附带图片资源'}】',
+        );
+      }
+    }
+    final title = _decodeFileTitle(p.basenameWithoutExtension(fileName));
+    final chapters = <BookChapter>[];
+    var heading = title;
+    var blocks = <String>[];
+    void flush() {
+      if (blocks.isEmpty) return;
+      chapters.add(
+        BookChapter(
+          id: '${chapters.length}',
+          title: heading,
+          blocks: List.of(blocks),
+        ),
+      );
+      blocks = [];
+    }
+
+    // Split parsed HTML, so headings inside fenced code remain ordinary text.
+    for (final node in fragment.nodes) {
+      if (node is! dom.Element) continue;
+      if (RegExp(r'^h[1-6]$').hasMatch(node.localName ?? '')) {
+        flush();
+        heading = node.text.trim();
+      }
+      blocks.add(node.outerHtml);
+    }
+    flush();
+    if (chapters.isEmpty || fragment.text?.trim().isEmpty == true) {
+      throw const FormatException('这本书没有可阅读的正文');
+    }
     return MemoryBookContent(title: title, author: '', chapters: chapters);
   }
 

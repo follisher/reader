@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 
 import 'models.dart';
+import 'book_layout.dart';
 import 'repository.dart';
 
 /// A host-defined category. Reuse the same const in catalogs and queries.
@@ -25,8 +28,13 @@ class CatalogTag {
 }
 
 class CatalogBook {
-  const CatalogBook({required this.assetPath, this.tags = const []});
+  const CatalogBook({
+    required this.assetPath,
+    this.tags = const [],
+    this.layoutAssetPath,
+  });
   final String assetPath;
+  final String? layoutAssetPath;
   final List<CatalogTag> tags;
 }
 
@@ -116,17 +124,30 @@ class ReaderLibrary {
     for (final entry in entries) {
       await _import(entry.assetPath, {
         for (final tag in entry.tags) tag.name: tag.color,
-      });
+      }, entry.layoutAssetPath);
     }
   }
 
-  Future<void> _import(String path, Map<String, String?> tags) async {
+  Future<void> _import(
+    String path,
+    Map<String, String?> tags,
+    String? layoutPath,
+  ) async {
     final data = await bundle.load(path);
     final book = await repository.importBytes(
       data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
       path.split('/').last,
       source: BookSource.builtIn,
     );
+    if (layoutPath != null && repository is BookLayoutRepository) {
+      final layout = BookLayout.fromJson(
+        jsonDecode(await bundle.loadString(layoutPath)) as Map<String, dynamic>,
+      );
+      await (repository as BookLayoutRepository).saveBookLayout(
+        book.id,
+        layout,
+      );
+    }
     await repository.syncCatalogTags(book.id, tags);
   }
 

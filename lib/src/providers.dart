@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'catalog.dart';
+import 'cover_pagination.dart';
 import 'models.dart';
 import 'repository.dart';
 
@@ -41,13 +42,7 @@ final shelfEntriesProvider = StreamProvider<List<ShelfEntry>>((ref) {
         }
       }
       markers.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      result.add(
-        ShelfEntry(
-          book: book,
-          noteCount: count,
-          markers: markers.take(4).toList(),
-        ),
-      );
+      result.add(ShelfEntry(book: book, noteCount: count, markers: markers));
     }
     return result;
   });
@@ -71,3 +66,13 @@ final booksByTagsProvider = StreamProvider.family<List<Book>, BookTagsQuery>(
   (ref, query) => ref.watch(readerLibraryProvider).watchBooksByTags(query),
   dependencies: [readerLibraryProvider],
 );
+
+final coverPaginationProvider = FutureProvider.autoDispose
+    .family<BookCoverPagination?, String>((ref, bookId) {
+      final repository = ref.watch(bookshelfRepositoryProvider);
+      return repository is BookCoverPaginationRepository
+          ? (repository as BookCoverPaginationRepository).loadCoverPagination(
+              bookId,
+            )
+          : Future.value(null);
+    }, dependencies: [bookshelfRepositoryProvider]);

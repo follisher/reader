@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-enum BookFormat { txt, epub }
+enum BookFormat { txt, epub, md }
 
 enum BookSource { imported, builtIn, downloaded }
 
@@ -163,10 +163,12 @@ class BookTocEntry {
     required this.title,
     this.chapter,
     this.block,
+    this.canonicalCharOffset,
     this.children = const [],
   });
   final String id, title;
   final int? chapter, block;
+  final int? canonicalCharOffset;
   final List<BookTocEntry> children;
 }
 

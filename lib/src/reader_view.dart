@@ -15,6 +15,7 @@ import 'reader_notes.dart';
 import 'reader_comment_sheets.dart';
 import 'epub_reader_view.dart';
 import 'package:flutter/foundation.dart';
+import 'widget/book_cover.dart';
 
 /// Routes local EPUB to Readium on iOS/Android and TXT to the text engine.
 /// Supply [source] or a text [controller] for legacy/custom chapter reading.
@@ -326,9 +327,23 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
             _toast('无法打开浏览器');
           }
         case engine.ReaderTextAction.share:
+          final pagination = await ref
+              .read(coverPaginationProvider(widget.book.id).future)
+              .catchError((Object _) => null);
+          if (!mounted) return;
+          final entries = await ref
+              .read(shelfEntriesProvider.future)
+              .catchError((Object _) => <ShelfEntry>[]);
+          final markers = [
+            for (final entry in entries)
+              if (entry.book.id == widget.book.id) ...entry.markers,
+          ];
           if (!mounted) return;
           await ShareCardSheet.show(
             context,
+            book: widget.book,
+            pagination: pagination,
+            markers: markers,
             bookTitle: widget.book.title,
             author: widget.book.author,
             coverPath: widget.book.coverPath,
@@ -424,6 +439,7 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
         ),
       );
     }
+    final coverContainer = ProviderScope.containerOf(context, listen: false);
     return PopScope(
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) unawaited(_flush());
@@ -433,6 +449,10 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
           children: [
             engine.BookReader(
               source: _source,
+              catalogCoverBuilder: (_) => UncontrolledProviderScope(
+                container: coverContainer,
+                child: RepositoryBookCover(book: widget.book),
+              ),
               config: _config,
               controller: _controller,
               progressStore: _progress!,
