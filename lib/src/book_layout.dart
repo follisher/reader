@@ -141,8 +141,7 @@ class LayoutBookContent implements OnDemandBookContent {
       );
 
   @override
-  Future<BookChapter> loadChapter(int index) async =>
-      (await renderChapter(index)).chapter;
+  Future<BookChapter> loadChapter(int index) => readOriginalChapter(index);
 }
 
 class RenderedLayoutChapter {

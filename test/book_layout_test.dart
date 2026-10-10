@@ -110,8 +110,7 @@ void main() {
             ],
           ),
         ).initialize();
-        final content = await repo.openBook(book);
-        expect(content, isA<LayoutBookContent>());
+        final content = await repo.openBook(book) as LayoutBookContent;
         expect(content.toc.single.children.map((e) => e.title), [
           '安身命例',
           '起五行寅例',
@@ -124,7 +123,11 @@ void main() {
           original.toEngine(hs.last.offset, 2),
         );
         expect(
-          (await content.readChapter(0)).blocks.join(),
+          await content.readChapter(0),
+          await content.readOriginalChapter(0),
+        );
+        expect(
+          (await content.renderChapter(0)).chapter.blocks.join(),
           contains('<h3>安身命例</h3>'),
         );
         await repo.close();
