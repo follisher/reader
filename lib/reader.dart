@@ -14,4 +14,8 @@ export 'package:flutter_book_reader/flutter_book_reader.dart'
 
 export 'src/catalog.dart';
 export 'src/navigation.dart';
-export 'src/widget/book_cover.dart' show BookCover;
+export 'src/widget/book_cover.dart' show BookCover, RepositoryBookCover;
+
+export 'src/book_layout.dart' show BookLayout, BookLayoutRepository;
+
+export 'src/cover_pagination.dart' show BookCoverPagination;

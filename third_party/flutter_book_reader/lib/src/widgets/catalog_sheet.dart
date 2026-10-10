@@ -35,9 +35,13 @@ class CatalogSheet extends StatefulWidget {
     this.onDeleteUnderline,
     this.onDeleteComment,
     this.scrollController,
+    this.coverBuilder,
     this.isChapterLocked,
     this.initialTabIndex = 1,
   });
+
+  /// Override the default artwork without coupling the engine to a bookshelf.
+  final WidgetBuilder? coverBuilder;
 
   final String bookTitle;
   final String author;
@@ -398,6 +402,16 @@ class _CatalogSheetState extends State<CatalogSheet>
   }
 
   Widget _cover() {
+    if (widget.coverBuilder != null) {
+      return SizedBox(
+        width: 56,
+        height: 78,
+        child: FittedBox(
+          alignment: Alignment.topLeft,
+          child: widget.coverBuilder!(context),
+        ),
+      );
+    }
     const double radius = 6;
     const double spine = 7;
     final HSLColor hsl = HSLColor.fromColor(widget.coverColor);

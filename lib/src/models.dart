@@ -163,10 +163,12 @@ class BookTocEntry {
     required this.title,
     this.chapter,
     this.block,
+    this.canonicalCharOffset,
     this.children = const [],
   });
   final String id, title;
   final int? chapter, block;
+  final int? canonicalCharOffset;
   final List<BookTocEntry> children;
 }
 

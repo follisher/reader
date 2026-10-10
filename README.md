@@ -261,3 +261,39 @@ EPUB 支持选区复制、划线、评论、查询、分享卡片、书签、笔
 ### Markdown 阅读
 
 本地导入支持 UTF-8 `.md`，按标题生成章节目录。默认文字阅读会去掉 Markdown 语法标记，支持现有划线、批注、书签和阅读进度保存。图文阅读可查看加粗、列表、引用、代码块和表格排版，但暂不支持划线。单个 MD 文件不附带图片资源，图片以替代文字展示。文字阅读不保留代码缩进和表格布局。划线以解析后的章节及字符范围定位，修改原文或解析规则后不保证迁移。
+
+### 内置图书目录与排版配置
+
+`CatalogBook.layoutAssetPath` 可指定与原始文件 SHA-256 对应的目录配置。宿主的 `assets/books/book_layout_manifest.json` 保存逐本梳理的原文标题、层级和行号；编译后为每本书生成 `.layout.json`，书架同步时写入本地目录。原始文件及文本阅读章节不变，已有划线、批注与阅读位置沿用原坐标。图文阅读按配置展示标题、在已有句末标点处拆分长段，并保留课式行内空间。图文位置保存时会换算回原文坐标。
+
+修改原书或目录后，先复核清单中的原文行号与标题，再运行目录编译工具：
+
+```sh
+flutter test tool/compile_book_layouts.dart \
+  --dart-define=BOOK_DRAFTS=../blindness/assets/books/book_layout_manifest.json \
+  --dart-define=BOOK_ROOT=../blindness/assets/books \
+  --dart-define=BOOK_REPORT=book_layout_report.json
+```
+
+完整语料验证：
+
+```sh
+flutter test test/book_layout_corpus_test.dart \
+  --dart-define=READER_BOOKS_DIRECTORY=../blindness/assets/books
+```
+
+目录改动只更新配置。更改原始文件会得到新的书籍 ID，旧阅读数据不会自动迁移；不要用整理副本直接覆盖原书以更新已有书架。无正文的缺卷、缺图与待校勘文字不补造。
+
+### 封面纸层与便签
+
+书架与命盘图书列表使用 `RepositoryBookCover`。`BookCover` 仍支持独立使用，传入
+`BookCoverPagination` 才显示有准确页位置的便签。分页尚未完成时只显示纸边。
+
+封面采用独立的固定版本：每行 20 个全角字、每页 24 行、段首缩进 2 字，每章第一页预留
+2 行标题。中英文按固定字格计算，不跟随阅读字号或设备变化，页码也不等于阅读器当前页码。
+原文和阅读笔记不修改；按笔记原始 UTF-16 坐标定位，标签横向锚定对应纸层，同页笔记合并。
+
+厚度按固定分页的总页数计算，每页厚度与间距各 0.1 逻辑像素；厚书按原有上限压缩厚度。
+封面保持完整宽度，纸面矩形在右侧外部绘制，保留顶部透视、渐变阴影与划线页位置。
+用最多 32 条装饰纹理模拟分页，不再逐页绘制；使用 RepaintBoundary 隔离。首次分页逐章后台计算，
+后续复用内存及 `cache/<bookId>/cover_pages.json` 缓存；缓存可重建，不需要导出。

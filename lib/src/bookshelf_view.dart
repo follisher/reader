@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math';
 import 'dart:ui' show ImageFilter;
 
@@ -89,7 +88,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
             uniformTypeIdentifiers: [
               'public.plain-text',
               'org.idpf.epub-container',
-              'public.text'
+              'public.text',
             ],
           ),
         ],
@@ -98,9 +97,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       for (final file in files) {
         try {
           final name = file.name.toLowerCase();
-          if (!name.endsWith('.txt') && !name.endsWith('.epub') &&
+          if (!name.endsWith('.txt') &&
+              !name.endsWith('.epub') &&
               !file.name.toLowerCase().endsWith('.md')) {
             throw const FormatException('请选择 UTF-8 TXT, Markdown（MD）或 EPUB 文件');
+          }
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
           }
@@ -365,6 +366,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
             ? ReaderPalette.nightBackground
             : ReaderPalette.libraryBackground,
         body: SafeArea(
+          bottom: false,
           child: _section == _ShelfSection.shelf
               ? _buildShelf()
               : _buildExcerptFeed(),
@@ -457,7 +459,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           children: [
             for (var column = 0; column < 3; column++)
               if (start + column < entries.length)
-                BookCover(
+                RepositoryBookCover(
                   key: ValueKey(entries[start + column].book.id),
                   book: entries[start + column].book,
                   showProgress: true,
@@ -693,9 +695,6 @@ class _ExcerptCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final item = this.item;
-    final cover = item.book.coverPath == null
-        ? null
-        : File(item.book.coverPath!);
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final dark = theme.brightness == Brightness.dark;
@@ -792,19 +791,15 @@ class _ExcerptCard extends StatelessWidget {
                   padding: const EdgeInsets.only(left: 2),
                   child: Row(
                     children: [
-                      if (cover != null && cover.existsSync()) ...[
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: Image.file(
-                            cover,
-                            width: 28,
-                            height: 38,
-                            fit: BoxFit.cover,
-                            filterQuality: FilterQuality.high,
-                          ),
+                      SizedBox(
+                        width: 28,
+                        height: 38,
+                        child: FittedBox(
+                          alignment: Alignment.topLeft,
+                          child: RepositoryBookCover(book: item.book),
                         ),
-                        const SizedBox(width: 9),
-                      ],
+                      ),
+                      const SizedBox(width: 9),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
