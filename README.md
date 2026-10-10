@@ -20,7 +20,7 @@ dependencies:
 
 ## 已实现能力
 
-- 三列网格书架、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
+- 分类单行横向滚动书架、整页纵向滚动、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
 - 跨书摘录流集中展示划线和评论，支持搜索、按书筛选、排序、随机回顾、复制、删除及跳回原文。
 - 多选导入本地 UTF-8 TXT 和 EPUB 文件。
 - EPUB 元数据、spine 章节顺序、正文与内嵌位图读取；书架会显示 EPUB 声明的封面，没有封面时使用默认图标。
@@ -150,7 +150,7 @@ BookCover(
 )
 ```
 
-默认大小为 110 × 162，父级 `SizedBox` 或网格约束可以调整大小。存在封面文件时显示图片，否则使用书名和作者生成的默认封面。`onTap`、`onLongPress` 可选；书架通过 `showProgress: true` 和 `markers` 保留原有进度与便签展示。
+默认正面宽 110、高 162，整体宽度额外包含按页数计算的纸页厚度；父级 `SizedBox` 或 `FittedBox` 可以调整大小。封面统一显示线装纸签和分类印章，已有封面图片作为底纹。`onTap`、`onLongPress` 可选；书架通过 `showProgress: true` 和 `markers` 保留原有进度与便签展示。
 
 ### Dart 内置目录
 
@@ -240,7 +240,15 @@ ReaderView(book: shelfBook, source: remoteSource, controller: controller);
 
 ## Readium 宿主配置
 
-要求 Flutter >= 3.44.4。Android 宿主需要 `FlutterFragmentActivity`、minSdk >= 24，以及 `compileOptions.isCoreLibraryDesugaringEnabled = true` 和 `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")`。示例工程已配置。iOS 要求 15.0；CocoaPods 配置可参考 `example/ios/Podfile`，Readium pods 使用 3.11.x。
+要求 Flutter >= 3.44.4。Android 宿主需要 `FlutterFragmentActivity`、minSdk >= 24，以及 `compileOptions.isCoreLibraryDesugaringEnabled = true` 和 `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")`。示例工程已配置。iOS 要求 15.0；CocoaPods 配置可参考 `example/ios/Podfile`，Readium pods 使用 3.11.x。宿主 `ios/Podfile` 必须显式配置 Readium 的专用源；插件 podspec 中的 `s.source` 不会注册依赖源：
+
+```ruby
+source 'https://github.com/readium/podspecs'
+source 'https://cdn.cocoapods.org/'
+platform :ios, '15.0'
+```
+
+在宿主 `ios` 目录运行 `pod install`。已有 Readium specs 缓存需要刷新时运行 `pod install --repo-update`。
 
 `ReaderView` 会自动分流。自定义仓库还需实现 `PublicationFileRepository.publicationPath`，返回本地原始 EPUB 路径。传入文本 `source` 或 `BookReaderController` 时保留自定义文本引擎。旧的 `HtmlReaderView` 与 `useLegacyTextReader` 入口已移除。Readium 当前是单出版物会话，不能同时打开两个 EPUB 页面；适配器会阻止第二个会话覆盖第一个。
 
@@ -294,6 +302,11 @@ flutter test test/book_layout_corpus_test.dart \
 原文和阅读笔记不修改；按笔记原始 UTF-16 坐标定位，标签横向锚定对应纸层，同页笔记合并。
 
 厚度按固定分页的总页数计算，每页厚度与间距各 0.1 逻辑像素；厚书按原有上限压缩厚度。
-封面保持完整宽度，纸面矩形在右侧外部绘制，保留顶部透视、渐变阴影与划线页位置。
+图书占用宽度为封面宽度加纸页厚度，厚度最小 3 逻辑像素，保留原有最大上限。
+纸面保留顶部透视、渐变阴影与划线页位置；书架按分类分行，分类标题位于左上方；每行图书保持固定间距并横向滚动，整页纵向滚动。
 用最多 32 条装饰纹理模拟分页，不再逐页绘制；使用 RepaintBoundary 隔离。首次分页逐章后台计算，
 后续复用内存及 `cache/<bookId>/cover_pages.json` 缓存；缓存可重建，不需要导出。
+
+书架默认选中分类视图。底部二级导航提供分类长条图标与四方块网格图标，
+宿主通过 `layoutControlsBuilder` 使用共享分段导航。网格模式自动换行，
+仅显示最小 3 像素纸页厚度，不显示阅读便签；切换模式不改动笔记与阅读进度。

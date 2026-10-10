@@ -4,7 +4,8 @@ export 'src/models.dart';
 export 'src/parser.dart' show BookParser, LocalBookParser;
 export 'src/repository.dart';
 export 'src/providers.dart';
-export 'src/bookshelf_view.dart' show BookshelfView;
+export 'src/bookshelf_view.dart'
+    show BookshelfView, BookshelfLayout, BookshelfLayoutControlsBuilder;
 export 'src/reader_view.dart';
 
 export 'src/book_reader_adapter.dart' show RepositoryBookSource;

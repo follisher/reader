@@ -84,7 +84,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(tester.getSize(find.byType(BookCover)), const Size(110, 162));
+    expect(tester.getSize(find.byType(BookCover)), const Size(127.6, 162));
     expect(find.text('50.0%'), findsOneWidget);
     expect(find.bySemanticsLabel('《封面测试》，已读 50%，有阅读便签'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -138,7 +138,7 @@ void main() {
         find.byKey(const ValueKey('book-cover-page-tab-999')),
       );
       expect(late.dx, greaterThan(early.dx));
-      expect(tester.getSize(find.byType(BookCover)), const Size(110, 162));
+      expect(tester.getSize(find.byType(BookCover)), const Size(127.6, 162));
       expect(tester.takeException(), isNull);
     },
   );

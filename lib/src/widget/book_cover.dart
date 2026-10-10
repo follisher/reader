@@ -9,6 +9,8 @@ import '../cover_pagination.dart';
 import '../models.dart';
 import '../repository.dart';
 
+const _paperTopHeight = 3.0;
+
 const _coverFontFallback = [
   'Songti SC',
   'Noto Serif CJK TC',
@@ -19,7 +21,7 @@ const _coverFontFallback = [
 ///
 /// The cover includes a vertical title slip and category seal. The shelf
 /// opts into note [markers] and reading [showProgress]. Parent
-/// constraints override the default 110 x 162 size.
+/// constraints override the default 110-pixel face plus paper depth, by 162.
 class BookCover extends StatelessWidget {
   const BookCover({
     super.key,
@@ -29,18 +31,30 @@ class BookCover extends StatelessWidget {
     this.showProgress = false,
     this.markers = const [],
     this.pagination,
+    this.minimalThickness = false,
   });
 
   final BookCoverPagination? pagination;
+  final bool minimalThickness;
   final Book book;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final bool showProgress;
   final List<ShelfNoteMarker> markers;
 
+  double get _pageDepth => minimalThickness
+      ? _paperTopHeight
+      : math.max(
+          _paperTopHeight,
+          math.min(
+            (110 * .16).clamp(15.0, 20.0),
+            math.max(1, pagination?.pageCount ?? 100) * .2,
+          ),
+        );
+
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 110,
+    width: 110 + _pageDepth,
     height: 162,
     child: Semantics(
       button: onTap != null || onLongPress != null,
@@ -56,6 +70,7 @@ class BookCover extends StatelessWidget {
           onLongPress: onLongPress,
           child: _BookCoverArtwork(
             pagination: pagination,
+            pageDepth: _pageDepth,
             book: book,
             markers: markers,
             showProgress: showProgress,
@@ -72,8 +87,10 @@ class _BookCoverArtwork extends StatelessWidget {
     required this.markers,
     required this.showProgress,
     required this.pagination,
+    required this.pageDepth,
   });
 
+  final double pageDepth;
   final BookCoverPagination? pagination;
   final Book book;
   final List<ShelfNoteMarker> markers;
@@ -184,13 +201,9 @@ class _BookCoverArtwork extends StatelessWidget {
       child: IgnorePointer(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final width = constraints.maxWidth;
             final height = constraints.maxHeight;
             final pages = math.max(1, pagination?.pageCount ?? 100);
-            final pageDepth = math.min(
-              (width * .16).clamp(15.0, 20.0),
-              pages * .2,
-            );
+
             final tabs = <int, ShelfNoteMarker>{};
             for (final marker in markers) {
               final parts = marker.noteKey.split(':');
@@ -202,14 +215,14 @@ class _BookCoverArtwork extends StatelessWidget {
               if (page != null) tabs.putIfAbsent(page, () => marker);
             }
             final tabPages = tabs.keys.toList()..sort();
-            const coverRight = 0.0;
+            final coverRight = pageDepth;
             const tabSize = 4.0;
             return Stack(
-              clipBehavior: Clip.none,
+              clipBehavior: Clip.hardEdge,
               children: [
                 Positioned(
                   left: 5,
-                  right: 1,
+                  right: 1 + pageDepth,
                   bottom: 1,
                   height: 9,
                   child: DecoratedBox(
@@ -229,7 +242,7 @@ class _BookCoverArtwork extends StatelessWidget {
                 Positioned(
                   top: 0,
                   left: 1,
-                  right: -pageDepth,
+                  right: 0,
                   bottom: 5,
                   child: RepaintBoundary(
                     child: CustomPaint(
@@ -243,7 +256,10 @@ class _BookCoverArtwork extends StatelessWidget {
                   Positioned(
                     key: ValueKey('book-cover-page-tab-${tabPages[i]}'),
                     top: height * (.15 + (tabPages[i] % 7) * .1),
-                    right: -pageDepth * (tabPages[i] + .5) / pages - 4,
+                    right: math.max(
+                      0.0,
+                      pageDepth * (1 - (tabPages[i] + .5) / pages) - tabSize,
+                    ),
                     child: Container(
                       width: tabSize,
                       height: 11,
@@ -284,7 +300,7 @@ class _BookCoverArtwork extends StatelessWidget {
                   ),
                 Positioned(
                   left: 1,
-                  top: 3,
+                  top: _paperTopHeight,
                   right: coverRight,
                   bottom: 5,
                   child: ClipRRect(
@@ -599,6 +615,7 @@ class _BindingPainter extends CustomPainter {
     final spine = Path()
       ..moveTo(10.5, 0)
       ..lineTo(10.5, size.height);
+    final stitches = Path();
     for (final y in ys) {
       canvas.drawCircle(
         Offset(10.5, y),
@@ -606,17 +623,16 @@ class _BindingPainter extends CustomPainter {
         Paint()..color = const Color(0xB8000000),
       );
       // Double horizontal strands meet the single continuous vertical thread.
-      final stitches = Path();
       for (final strand in [-.8, .8]) {
         stitches
           ..moveTo(0, y + strand)
           ..lineTo(10.5, y + strand);
       }
-      canvas.drawPath(stitches, shadow);
-      canvas.drawPath(stitches, thread);
     }
     canvas.drawPath(spine, shadow);
     canvas.drawPath(spine, thread);
+    canvas.drawPath(stitches, shadow);
+    canvas.drawPath(stitches, thread);
   }
 
   @override
@@ -685,8 +701,8 @@ class _PageEdgesPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final front = size.width - depth;
     final top = Path()
-      ..moveTo(0, 3)
-      ..lineTo(front, 3)
+      ..moveTo(0, _paperTopHeight)
+      ..lineTo(front, _paperTopHeight)
       ..lineTo(size.width, 0)
       ..lineTo(depth, 0)
       ..close();
@@ -697,12 +713,12 @@ class _PageEdgesPainter extends CustomPainter {
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [Color(0xFFF8EFD9), Color(0xFFF1E6CD)],
-        ).createShader(Rect.fromLTWH(0, 0, size.width, 3)),
+        ).createShader(Rect.fromLTWH(0, 0, size.width, _paperTopHeight)),
     );
     final side = Path()
-      ..moveTo(front, 3)
+      ..moveTo(front, _paperTopHeight)
       ..lineTo(size.width, 0)
-      ..lineTo(size.width, size.height - 3)
+      ..lineTo(size.width, size.height - _paperTopHeight)
       ..lineTo(front, size.height)
       ..close();
     final paperRect = Rect.fromLTWH(front, 0, depth, size.height);
@@ -717,10 +733,10 @@ class _PageEdgesPainter extends CustomPainter {
     for (var stripe = 0; stripe < textureCount; stripe++) {
       final fraction = (stripe + .5) / textureCount;
       final x = front + depth * fraction;
-      final y = 3 * (1 - fraction);
+      final y = _paperTopHeight * (1 - fraction);
       final lines = stripe.isEven ? darkLines : lightLines;
       lines.moveTo(x, y);
-      lines.lineTo(x, size.height - 3 * fraction);
+      lines.lineTo(x, size.height - _paperTopHeight * fraction);
     }
     canvas.drawPath(
       darkLines,
@@ -741,7 +757,7 @@ class _PageEdgesPainter extends CustomPainter {
       side,
       Paint()
         ..shader = const LinearGradient(
-          colors: [Color(0x80000000), Color(0x00000000), Color(0x33000000)],
+          colors: [Color(0x40000000), Color(0x00000000), Color(0x1A000000)],
           stops: [0, .7, 1],
         ).createShader(Rect.fromLTWH(front, 0, depth, size.height)),
     );
@@ -753,10 +769,10 @@ class _PageEdgesPainter extends CustomPainter {
         ..strokeWidth = .05,
     );
     final coverEdges = Path()
-      ..moveTo(0, 3)
+      ..moveTo(0, _paperTopHeight)
       ..lineTo(depth, 0)
       ..lineTo(size.width, 0)
-      ..lineTo(size.width, size.height - 3);
+      ..lineTo(size.width, size.height - _paperTopHeight);
     canvas.drawPath(
       coverEdges,
       Paint()
@@ -780,17 +796,18 @@ class RepositoryBookCover extends ConsumerWidget {
     this.onLongPress,
     this.showProgress = false,
     this.markers,
+    this.minimalThickness = false,
   });
   final Book book;
+  final bool minimalThickness;
   final VoidCallback? onTap, onLongPress;
   final bool showProgress;
   final List<ShelfNoteMarker>? markers;
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final pagination = ref
-        .watch(coverPaginationProvider(book.id))
-        .asData
-        ?.value;
+    final pagination = minimalThickness
+        ? null
+        : ref.watch(coverPaginationProvider(book.id)).asData?.value;
     final entries = markers == null
         ? ref.watch(shelfEntriesProvider).asData?.value
         : null;
@@ -802,6 +819,7 @@ class RepositoryBookCover extends ConsumerWidget {
         ];
     return BookCover(
       book: book,
+      minimalThickness: minimalThickness,
       pagination: pagination,
       markers: notes,
       showProgress: showProgress,
