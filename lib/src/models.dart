@@ -4,12 +4,30 @@ enum BookFormat { txt, epub }
 
 enum BookSource { imported, builtIn, downloaded }
 
+/// Engine-owned location, persisted without lossy character conversion.
+class ReaderAnchor {
+  const ReaderAnchor({required this.type, required this.value});
+  final String type;
+  final Map<String, dynamic> value;
+  Map<String, dynamic> toJson() => {'type': type, 'value': value};
+  static ReaderAnchor? fromJson(dynamic json) {
+    if (json is! Map || json['type'] is! String || json['value'] is! Map) {
+      return null;
+    }
+    return ReaderAnchor(
+      type: json['type'] as String,
+      value: Map<String, dynamic>.from(json['value'] as Map),
+    );
+  }
+}
+
 class ReadingLocation {
   const ReadingLocation({
     this.chapter = 0,
     this.block = 0,
     this.progress = 0,
     this.charOffset,
+    this.anchor,
   });
   final int chapter;
   // Content block, never a screen pixel/page: stable when typography changes.
@@ -19,6 +37,7 @@ class ReadingLocation {
   /// Offset in normalized chapter text, excluding layout indentation/newlines.
   /// Null identifies a legacy block-based position.
   final int? charOffset;
+  final ReaderAnchor? anchor;
 }
 
 class ReaderSettings {
@@ -33,6 +52,7 @@ class ReaderSettings {
     this.justify = true,
     this.dimLevel = 0,
     this.fontFamily,
+    this.epubScroll = true,
   });
   final double fontSize;
   final bool dark;
@@ -41,6 +61,7 @@ class ReaderSettings {
   final int firstLineIndent;
   final bool justify;
   final String? fontFamily;
+  final bool epubScroll;
 
   ReaderSettings copyWith({double? fontSize, bool? dark}) => ReaderSettings(
     fontSize: fontSize ?? this.fontSize,
@@ -53,6 +74,7 @@ class ReaderSettings {
     justify: justify,
     dimLevel: dimLevel,
     fontFamily: fontFamily,
+    epubScroll: epubScroll,
   );
 
   Map<String, Object?> toJson() => {
@@ -64,6 +86,7 @@ class ReaderSettings {
     'justify': justify,
     'dimLevel': dimLevel,
     'fontFamily': fontFamily,
+    'epubScroll': epubScroll,
   };
 }
 
@@ -111,11 +134,13 @@ class ReaderOpenRequest {
     required this.book,
     this.chapterIndex,
     this.charOffset,
+    this.anchor,
   });
 
   final Book book;
   final int? chapterIndex;
   final int? charOffset;
+  final ReaderAnchor? anchor;
 }
 
 enum BookChapterKind { content, cover, titlePage, copyright, backCover }

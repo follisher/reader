@@ -70,6 +70,37 @@ class ReaderTheme {
     return h.withLightness((h.lightness + 0.04).clamp(0.0, 1.0)).toColor();
   }
 
+  /// 持久划线颜色。TXT 与基于 Readium 的阅读器共用此规则，保证切换纸张主题后
+  /// 划线仍属于同一色系，并在浅色、深色背景上都保持足够对比度。
+  Color get underlineColor {
+    final HSLColor h = HSLColor.fromColor(selectionColor);
+    final double saturation = (h.saturation + 0.12).clamp(0.0, 1.0);
+    final double lightness = isDark
+        ? (h.lightness + 0.16).clamp(0.0, 1.0)
+        : (h.lightness - 0.24).clamp(0.0, 1.0);
+    return h.withSaturation(saturation).withLightness(lightness).toColor();
+  }
+
+  /// 评论引用原文的持久背景色。降低饱和度和不透明度，避免遮盖正文。
+  /// TXT 与基于 Readium 的阅读器共用此规则。
+  Color get commentHighlightColor {
+    final HSLColor h = HSLColor.fromColor(selectionColor);
+    final Color toned = h
+        .withSaturation((h.saturation * 0.55).clamp(0.0, 0.32))
+        .withLightness(
+          isDark
+              ? (h.lightness + 0.10).clamp(0.0, 1.0)
+              : (h.lightness - 0.04).clamp(0.0, 1.0),
+        )
+        .toColor();
+    // 先与纸张色合成为不透明颜色；部分 Readium/iOS 版本对带 alpha 的装饰色
+    // 解析不一致，不透明结果能保证两个引擎显示相同。
+    return Color.alphaBlend(
+      toned.withValues(alpha: isDark ? 0.48 : 0.62),
+      paperColor,
+    );
+  }
+
   /// 复制并覆盖部分字段，便于业务方基于预设微调。
   ReaderTheme copyWith({
     String? alias,

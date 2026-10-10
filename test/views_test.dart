@@ -1,12 +1,13 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
+import 'package:reader/src/epub_reader_view.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/reader.dart';
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 const _previewCover = String.fromEnvironment('READER_PREVIEW_COVER');
 
@@ -154,6 +155,8 @@ void main() {
       expect(reader.book, same(book));
       expect(reader.initialChapter, 1);
       expect(reader.initialCharOffset, 8);
+      expect(find.byType(engine.BookReader), findsOneWidget);
+      expect(find.byType(EpubReaderView), findsNothing);
       expect(
         ProviderScope.containerOf(
           tester.element(find.byType(ReaderView)),
@@ -175,57 +178,85 @@ void main() {
     },
   );
 
-  testWidgets('toc selects only current subsection and jumps to its block', (
-    tester,
-  ) async {
-    final repo = FakeRepository()
-      ..toc = const [
-        BookTocEntry(
-          id: 'root',
-          title: '章目录',
-          chapter: 1,
-          block: 0,
-          children: [
-            BookTocEntry(id: 'a', title: '小节甲', chapter: 1, block: 0),
-            BookTocEntry(id: 'b', title: '小节乙', chapter: 1, block: 7),
-            BookTocEntry(id: 'c', title: '小节丙', chapter: 1, block: 14),
-          ],
-        ),
-      ];
-    await tester.pumpWidget(app(repo, HtmlReaderView(book: book)));
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    for (final hasAnchor in [false, true]) {
+      testWidgets(
+        'EPUB excerpt uses EPUB reader on $platform (anchor: $hasAnchor)',
+        (tester) async {
+          final epub = Book(
+            id: 'epub',
+            title: 'EPUB',
+            author: '',
+            format: BookFormat.epub,
+            source: BookSource.imported,
+            fileName: 'book.epub',
+            addedAt: DateTime(2026),
+          );
+          final anchor = hasAnchor
+              ? const ReaderAnchor(
+                  type: 'readium',
+                  value: {
+                    'href': 'chapter.xhtml',
+                    'type': 'application/xhtml+xml',
+                    'locations': {'progression': .3},
+                  },
+                )
+              : null;
+          late BuildContext pageContext;
+          await tester.pumpWidget(
+            app(
+              FakeRepository(),
+              Builder(
+                builder: (context) {
+                  pageContext = context;
+                  return const Scaffold();
+                },
+              ),
+            ),
+          );
+          final closed = openReaderRequest(
+            pageContext,
+            request: ReaderOpenRequest(
+              book: epub,
+              chapterIndex: 1,
+              charOffset: 8,
+              anchor: anchor,
+            ),
+          );
+          // The repository stub has no native publication; only inspect routing.
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 400));
+          final reader = tester.widget<EpubReaderView>(
+            find.byType(EpubReaderView),
+          );
+          expect(reader.initialAnchor, same(anchor));
+          expect(reader.initialChapter, 1);
+          expect(find.byType(engine.BookReader), findsNothing);
+          expect(find.text('图文阅读'), findsNothing);
+          Navigator.of(tester.element(find.byType(EpubReaderView))).pop();
+          await tester.pumpAndSettle();
+          await closed;
+          expect(tester.takeException(), isNull);
+        },
+        variant: TargetPlatformVariant({platform}),
+      );
+    }
+  }
+
+  testWidgets('text reader displays recoverable file errors', (tester) async {
+    final repo = FakeRepository()..failOpen = true;
+    await tester.pumpWidget(app(repo, ReaderView(book: book)));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('目录'));
+    expect(find.textContaining('图书文件不存在'), findsOneWidget);
+    repo.failOpen = false;
+    await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
-    final selected = tester
-        .widgetList<ListTile>(find.byType(ListTile))
-        .where((tile) => tile.selected);
-    expect(selected.length, 1);
-    expect((selected.single.title as Text).data, '小节乙');
-    await tester.tap(find.text('小节丙'));
-    await tester.pumpAndSettle();
-    expect(repo.saves.last.chapter, 1);
-    expect(repo.saves.last.block, 14);
-    await tester.tap(find.byTooltip('目录'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('章目录'));
-    await tester.pumpAndSettle();
-    expect(repo.saves.last.block, 0);
-    expect(repo.saves.last.progress, .5);
-    final heading = tester.getRect(find.text('第二章 山间'));
-    final toolbar = tester.getRect(find.byType(AppBar));
-    expect(heading.top, greaterThanOrEqualTo(toolbar.bottom + 12));
-    expect(heading.bottom, lessThan(tester.view.physicalSize.height));
-    await tester.tapAt(heading.center);
-    await tester.pumpAndSettle();
-    expect(tester.getRect(find.text('第二章 山间')), heading);
-    final list = find.byType(ScrollablePositionedList);
-    expect(tester.getRect(list).top, 0);
-    await tester.tapAt(heading.center);
-    await tester.pumpAndSettle();
-    expect(tester.getRect(find.text('第二章 山间')), heading);
+    expect(find.byType(engine.BookReader), findsOneWidget);
+    expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     await tester.pumpAndSettle();
   });
+
   setUpAll(() async {
     const fontPath = String.fromEnvironment('READER_PREVIEW_FONT');
     if (fontPath.isEmpty) return;
@@ -527,53 +558,5 @@ void main() {
 
     expect(find.text('摘录'), findsOneWidget);
     expect(find.text('还没有摘录'), findsOneWidget);
-  });
-
-  testWidgets(
-    'reader restores block, preserves it on font change, navigates and saves',
-    (tester) async {
-      tester.view.physicalSize = const Size(390, 844);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final repo = FakeRepository();
-      await tester.pumpWidget(
-        app(repo, HtmlReaderView(book: book, followHostTheme: false)),
-      );
-      await tester.pumpAndSettle();
-      expect(find.textContaining('段落 1-8', findRichText: true), findsWidgets);
-      await capture(tester, 'reader');
-      await tester.tap(find.byTooltip('放大字号'));
-      await tester.pumpAndSettle();
-      expect(repo.settings.fontSize, 22);
-      expect(find.textContaining('段落 1-8', findRichText: true), findsWidgets);
-      await tester.tap(find.byTooltip('夜间模式'));
-      await tester.pumpAndSettle();
-      expect(repo.settings.dark, isTrue);
-      await capture(tester, 'reader-dark');
-      await tester.tap(find.byTooltip('目录'));
-      await tester.pumpAndSettle();
-      expect(find.byTooltip('上一章'), findsOneWidget);
-      expect(find.byTooltip('下一章'), findsOneWidget);
-      await tester.tap(find.text('第一章 出发'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('段落 0-0', findRichText: true), findsWidgets);
-      expect(repo.saves.last.chapter, 0);
-      await tester.pumpWidget(const SizedBox());
-      await tester.pump();
-      expect(repo.saves.last.chapter, 0);
-      expect(tester.takeException(), isNull);
-    },
-  );
-  testWidgets('reader displays recoverable file errors', (tester) async {
-    final repo = FakeRepository()..failOpen = true;
-    await tester.pumpWidget(app(repo, HtmlReaderView(book: book)));
-    await tester.pumpAndSettle();
-    expect(find.text('图书文件不存在'), findsOneWidget);
-    repo.failOpen = false;
-    await tester.tap(find.text('重试'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('段落 1-8', findRichText: true), findsWidgets);
-    expect(tester.takeException(), isNull);
   });
 }

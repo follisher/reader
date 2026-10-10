@@ -33,6 +33,7 @@ class ReaderMenu extends StatefulWidget {
     this.onStartAutoTurn,
     this.onStopAutoTurn,
     this.autoTurning = false,
+    this.supportedFlipTypes = FlipType.values,
   });
 
   final bool visible;
@@ -73,6 +74,7 @@ class ReaderMenu extends StatefulWidget {
 
   /// 当前是否正在自动阅读：决定该入口显示「开启自动翻页」还是「停止自动阅读」。
   final bool autoTurning;
+  final List<FlipType> supportedFlipTypes;
 
   @override
   State<ReaderMenu> createState() => _ReaderMenuState();
@@ -470,7 +472,7 @@ class _ReaderMenuState extends State<ReaderMenu> {
     );
   }
 
-  // 目录 / 日夜 / 设置
+  //正文底部导航： 目录 / 日夜 / 设置
   Widget _buildNavRow() {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
@@ -728,7 +730,7 @@ class _ReaderMenuState extends State<ReaderMenu> {
     final bool dark = _t.isDark;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: FlipType.values.map((FlipType f) {
+      children: widget.supportedFlipTypes.map((FlipType f) {
         final bool active = c.flipType == f;
         final String label = _flipLabel(f);
         return Semantics(

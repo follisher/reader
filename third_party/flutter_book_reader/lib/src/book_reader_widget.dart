@@ -25,6 +25,7 @@ import 'views/reader_page_builder.dart';
 import 'views/simulation_reader.dart';
 import 'views/vertical_reader.dart';
 import 'widgets/auto_turn_bar.dart';
+import 'widgets/reader_auto_read_controls.dart';
 import 'widgets/battery_indicator.dart';
 import 'widgets/catalog_sheet.dart';
 import 'widgets/loading_page.dart';
@@ -804,76 +805,13 @@ class _BookReaderState extends State<BookReader>
   ///
   /// 文案取 [BookReader.labels]（而非 `ReaderLabels.of(context)`）——本方法用的是
   /// BookReader 自身的 context，而 ReaderLabelsScope 建在其子树里，向上查找取不到。
-  Widget _autoReadBar(ReaderTheme t) {
-    final String label = widget.labels.autoTurn;
-    // 外层 Positioned 把「页脚带中心线」交给这里，再下移自身一半高度，
-    // 使入口的垂直中心正好落在该线上——与页码 / 进度 / 电量视觉同一行。
-    return FractionalTranslation(
-      translation: const Offset(0, 0.5),
-      child: Center(
-        child: _autoBarCollapsed
-            ? _autoReadText(t, label)
-            : _autoReadPill(t, label),
-      ),
-    );
-  }
-
-  /// 文字态：仅一行小字，点击展开回按钮态。
-  Widget _autoReadText(ReaderTheme t, String label) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _autoBarCollapsed = false),
-      child: Padding(
-        // 纵向留白压到与页脚带等高，避免比同排的页码 / 电量高出一截。
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-        child: Text(
-          label,
-          style: TextStyle(fontSize: 12, height: 1.0, color: t.subTextColor),
-        ),
-      ),
-    );
-  }
-
-  /// 按钮态：药丸按钮，点击弹出速度 / 退出面板。
-  Widget _autoReadPill(ReaderTheme t, String label) {
-    return GestureDetector(
-      key: const ValueKey<String>('auto-read-settings-entry'),
-      behavior: HitTestBehavior.opaque,
-      onTap: _openAutoReadSettings,
-      child: Container(
-        // 按钮态给足点击面积（约为文字态的两倍高），仍以页脚中心线为垂直基准居中。
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
-        decoration: BoxDecoration(
-          color: t.panelColor,
-          borderRadius: BorderRadius.circular(22),
-          border: Border.all(color: t.dividerColor),
-          boxShadow: <BoxShadow>[
-            BoxShadow(
-              color: Colors.black.withValues(alpha: t.isDark ? 0.35 : 0.1),
-              blurRadius: 10,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(Icons.tune, size: 18, color: t.accentColor),
-            const SizedBox(width: 7),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 15,
-                height: 1.0,
-                fontWeight: FontWeight.w600,
-                color: t.textColor,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget _autoReadBar(ReaderTheme t) => ReaderAutoReadBar(
+        theme: t,
+        labels: widget.labels,
+        collapsed: _autoBarCollapsed,
+        onExpand: () => setState(() => _autoBarCollapsed = false),
+        onSettings: _openAutoReadSettings,
+      );
 
   /// 自动阅读设置面板：调阅读快慢 + 退出自动阅读（不含翻页方式切换）。
   Future<void> _openAutoReadSettings() async {
@@ -884,85 +822,19 @@ class _BookReaderState extends State<BookReader>
     // must not keep driving the page behind the overlay.
     final bool wasAutoTurning = c.autoTurning;
     if (wasAutoTurning) c.setAutoTurning(false);
-    bool resumeAfterClose = wasAutoTurning;
-    final ReaderTheme t = _config.theme;
-    final ReaderLabels labels = widget.labels; // 同上：不能用 of(context)
-    // 速度映射：滑到「慢」= 40s/屏，「快」= 15s/屏。
-    const double slowSecs = 40;
-    const double fastSecs = 15;
-    double toValue(Duration d) =>
-        ((slowSecs - d.inMilliseconds / 1000) / (slowSecs - fastSecs))
-            .clamp(0.0, 1.0);
-    await showModalBottomSheet<void>(
+    final resumeAfterClose = await showReaderAutoReadSettings(
       context: context,
-      backgroundColor: t.panelColor,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (BuildContext ctx) {
-        double value = toValue(c.autoTurnInterval);
-        return SafeArea(
-          top: false,
-          child: StatefulBuilder(
-            builder: (BuildContext ctx, StateSetter setSheet) => Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 6),
-                  child: Row(
-                    children: <Widget>[
-                      Text(labels.speedSlow,
-                          style:
-                              TextStyle(fontSize: 14, color: t.subTextColor)),
-                      Expanded(
-                        child: Slider(
-                          value: value,
-                          activeColor: t.accentColor,
-                          inactiveColor: t.trackColor,
-                          onChanged: (double v) {
-                            setSheet(() => value = v);
-                            final double secs =
-                                slowSecs - v * (slowSecs - fastSecs);
-                            c.setAutoTurnInterval(
-                              Duration(milliseconds: (secs * 1000).round()),
-                            );
-                          },
-                        ),
-                      ),
-                      Text(labels.speedFast,
-                          style:
-                              TextStyle(fontSize: 14, color: t.subTextColor)),
-                    ],
-                  ),
-                ),
-                Divider(height: 1, color: t.dividerColor),
-                InkWell(
-                  onTap: () {
-                    resumeAfterClose = false;
-                    Navigator.of(ctx).pop();
-                    c.setAutoTurning(false);
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    child: Center(
-                      child: Text(
-                        labels.autoTurnExit,
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: t.textColor,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+      theme: _config.theme,
+      labels: widget.labels,
+      interval: c.autoTurnInterval,
+      onIntervalChanged: c.setAutoTurnInterval,
     );
-    if (!mounted || !resumeAfterClose || !identical(_controller, c)) return;
+    if (!mounted ||
+        !wasAutoTurning ||
+        !resumeAfterClose ||
+        !identical(_controller, c)) {
+      return;
+    }
     // Let the bottom-sheet dismissal and the reader's final position
     // correction finish before starting at the newly selected speed.
     _autoReadResumeTimer = Timer(const Duration(milliseconds: 450), () {

@@ -304,9 +304,9 @@ class ReaderLabels {
   };
 
   /// 按语言码取内置文案；不在内置 12 种内则回退英文。
-  static ReaderLabels forLanguageCode(String? code) => _byCode[code] ?? english;
+  static ReaderLabels forLanguageCode(String? code) => _byCode[code] ?? chinese;
 
-  static const ReaderLabels fallback = english;
+  static const ReaderLabels fallback = chinese;
 
   static ReaderLabels of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<ReaderLabelsScope>()?.labels ??

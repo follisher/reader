@@ -30,9 +30,7 @@ void main() {
       final repository = FakeRepository()
         ..settings = const ReaderSettings(theme: 'yellow');
       final mode = ValueNotifier(ThemeMode.dark);
-      await tester.pumpWidget(
-        _host(repository, mode, ReaderView(book: book)),
-      );
+      await tester.pumpWidget(_host(repository, mode, ReaderView(book: book)));
       await tester.pumpAndSettle();
       final config = tester
           .widget<engine.BookReader>(find.byType(engine.BookReader))
@@ -73,35 +71,6 @@ void main() {
           .theme
           .alias,
       'yellow',
-    );
-    await tester.pumpWidget(const SizedBox());
-    await tester.pumpAndSettle();
-    mode.dispose();
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('HTML follows host and font changes preserve saved theme', (
-    tester,
-  ) async {
-    final repository = FakeRepository();
-    final mode = ValueNotifier(ThemeMode.dark);
-    await tester.pumpWidget(
-      _host(repository, mode, HtmlReaderView(book: book)),
-    );
-    await tester.pumpAndSettle();
-    expect(
-      Theme.of(tester.element(find.byType(Scaffold))).scaffoldBackgroundColor,
-      ReaderPalette.nightBackground,
-    );
-    expect(find.byTooltip('日间模式'), findsNothing);
-    await tester.tap(find.byTooltip('放大字号'));
-    await tester.pumpAndSettle();
-    expect(repository.settings.dark, isFalse);
-    mode.value = ThemeMode.light;
-    await tester.pumpAndSettle();
-    expect(
-      Theme.of(tester.element(find.byType(Scaffold))).scaffoldBackgroundColor,
-      ReaderPalette.background,
     );
     await tester.pumpWidget(const SizedBox());
     await tester.pumpAndSettle();

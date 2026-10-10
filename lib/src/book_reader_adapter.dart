@@ -132,6 +132,13 @@ class TextChapter {
     final blocks = <int>[];
     for (var i = 0; i < chapter.blocks.length; i++) {
       final fragment = html.parseFragment(chapter.blocks[i]);
+      // The text engine supplies its own chapter title. Keep its historical
+      // character offsets when the rich parser retains original h1 headings.
+      if (chapter.kind == BookChapterKind.content) {
+        for (final heading in fragment.querySelectorAll('h1')) {
+          heading.remove();
+        }
+      }
       for (final node in fragment.querySelectorAll('script,style')) {
         node.remove();
       }
@@ -139,7 +146,7 @@ class TextChapter {
         final alt = image.attributes['alt']?.trim();
         image.replaceWith(
           html.parseFragment('<p></p>').nodes.first
-            ..text = alt?.isNotEmpty == true ? '【图片：$alt】' : '【图片，请切换图文阅读查看】',
+            ..text = alt?.isNotEmpty == true ? '【图片：$alt】' : '【图片】',
         );
       }
       for (final br in fragment.querySelectorAll('br')) {
@@ -158,7 +165,7 @@ class TextChapter {
       }
     }
     if (paragraphs.isEmpty) {
-      paragraphs.add('本章没有文本内容，请切换图文阅读查看。');
+      paragraphs.add('本章没有文本内容。');
       blocks.add(0);
     }
     return TextChapter(paragraphs, blocks);

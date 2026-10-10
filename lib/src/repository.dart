@@ -59,6 +59,7 @@ class ExcerptItem {
     required this.createdAt,
     required this.quote,
     required this.comment,
+    this.anchor,
   });
 
   final ReaderNoteRef ref;
@@ -69,6 +70,7 @@ class ExcerptItem {
   final int createdAt;
   final String quote;
   final String comment;
+  final ReaderAnchor? anchor;
 
   bool get isComment => ref.kind == ReaderNoteKind.comment;
 }
@@ -111,6 +113,10 @@ abstract interface class BookshelfInsightsRepository {
   Future<void> deleteReaderNote(ReaderNoteRef ref);
 }
 
+abstract interface class PublicationFileRepository {
+  Future<String> publicationPath(Book book);
+}
+
 class BookImportResult {
   const BookImportResult({required this.book, required this.isDuplicate});
   final Book book;
@@ -121,13 +127,20 @@ Future<BookContent> _parseLocal((Uint8List, String) input) =>
     LocalBookParser().parse(input.$1, input.$2);
 
 class LocalBookshelfRepository
-    implements BookshelfRepository, BookshelfInsightsRepository {
+    implements
+        BookshelfRepository,
+        BookshelfInsightsRepository,
+        PublicationFileRepository {
+  @override
+  Future<String> publicationPath(Book book) async =>
+      p.join(directory.path, book.fileName);
+
   /// Version of the on-disk cache JSON and chapter files.
   static const cacheFormatVersion = 2;
 
   /// Version of parser-derived output (titles, TOC and anchors). Increment
   /// only when a parser change makes an existing parsed result stale.
-  static const parserRevision = 5;
+  static const parserRevision = 7;
 
   static const _maxCoverBytes = 10 * 1024 * 1024;
   LocalBookshelfRepository._(this.directory, this._db, this.parser);
@@ -148,7 +161,7 @@ class LocalBookshelfRepository
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 9,
+        version: 10,
         onCreate: (db, _) async {
           await db.execute(
             'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0)',
@@ -159,8 +172,12 @@ class LocalBookshelfRepository
           await _createNotesTable(db);
           await _createNotesIndexes(db);
           await _createTagsTables(db);
+          await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 10) {
+            await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');
+          }
           if (oldVersion < 9) {
             await db.execute(
               'ALTER TABLE books ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0',
@@ -342,10 +359,12 @@ class LocalBookshelfRepository
           (note) => <String, Object?>{
             'book_id': bookId,
             'kind': kind.name,
-            'note_key': kind == ReaderNoteKind.bookmark
-                ? '${note['chapterIndex']}:${note['charOffset']}'
-                : '${note['chapterIndex']}:${note['start']}:${note['end']}'
-                      '${kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}',
+            'note_key':
+                note['id'] as String? ??
+                (kind == ReaderNoteKind.bookmark
+                    ? '${note['chapterIndex']}:${note['charOffset']}'
+                    : '${note['chapterIndex']}:${note['start']}:${note['end']}'
+                          '${kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}'),
             'payload': jsonEncode(note),
             ..._queryFields(kind, note),
           },
@@ -457,6 +476,9 @@ class LocalBookshelfRepository
         ? null
         : DateTime.fromMillisecondsSinceEpoch(row['last_read_at'] as int),
     location: ReadingLocation(
+      anchor: row['anchor_json'] == null
+          ? null
+          : ReaderAnchor.fromJson(jsonDecode(row['anchor_json'] as String)),
       chapter: row['chapter'] as int,
       block: row['block'] as int,
       charOffset: row['char_offset'] as int?,
@@ -633,6 +655,7 @@ class LocalBookshelfRepository
               noteKey: row['note_key'] as String,
             ),
             book: book,
+            anchor: ReaderAnchor.fromJson(payload['anchor']),
             chapterIndex: row['chapter_index'] as int? ?? 0,
             startOffset: row['start_offset'] as int? ?? 0,
             chapterTitle: payload['chapterTitle'] as String? ?? '',
@@ -805,9 +828,12 @@ class LocalBookshelfRepository
   @override
   Future<BookContent> openBook(Book book) async {
     final inMemory = _memoryCache[book.id];
-    if (inMemory != null) return inMemory;
+    bool correctTitle(BookContent content) =>
+        book.format != BookFormat.txt ||
+        content.title == _decodeStoredTitle(book.title);
+    if (inMemory != null && correctTitle(inMemory)) return inMemory;
     final cached = await _readCache(book.id);
-    if (cached != null) {
+    if (cached != null && correctTitle(cached)) {
       _memoryCache[book.id] = cached;
       if (!book.cacheReady) {
         await _db.update(
@@ -824,7 +850,12 @@ class LocalBookshelfRepository
     if (!await file.exists()) {
       throw const FormatException('本地图书文件不存在，请移除后重新导入');
     }
-    final content = await _parse(await file.readAsBytes(), book.fileName);
+    // Managed filenames are content hashes. TXT derives its title (and unnamed
+    // chapter titles) from the filename, so rebuild using the bookshelf title.
+    final parsingName = book.format == BookFormat.txt
+        ? '${Uri.encodeComponent(_decodeStoredTitle(book.title))}.txt'
+        : book.fileName;
+    final content = await _parse(await file.readAsBytes(), parsingName);
     if (await _writeCache(book.id, content)) {
       await _db.update(
         'books',
@@ -834,7 +865,8 @@ class LocalBookshelfRepository
       );
       _changes.add(null);
     }
-    final result = await _readCache(book.id) ?? content;
+    final rebuilt = await _readCache(book.id);
+    final result = rebuilt != null && correctTitle(rebuilt) ? rebuilt : content;
     _memoryCache[book.id] = result;
     return result;
   }
@@ -848,6 +880,9 @@ class LocalBookshelfRepository
             'chapter': location.chapter,
             'block': location.block,
             'char_offset': location.charOffset,
+            'anchor_json': location.anchor == null
+                ? null
+                : jsonEncode(location.anchor!.toJson()),
             'progress': location.progress.clamp(0, 1),
             'last_read_at': DateTime.now().millisecondsSinceEpoch,
           },
@@ -916,6 +951,7 @@ class LocalBookshelfRepository
     return ReaderSettings(
       theme: options['theme'] as String? ?? 'yellow',
       flipMode: options['flipMode'] as String? ?? 'scrollVertical',
+      epubScroll: options['epubScroll'] as bool? ?? true,
       lineHeight: (options['lineHeight'] as num?)?.toDouble() ?? 1.8,
       paragraphSpacing: (options['paragraphSpacing'] as num?)?.toDouble() ?? 8,
       firstLineIndent: options['firstLineIndent'] as int? ?? 2,

@@ -157,7 +157,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Notes 1'));
+    await tester.tap(find.text('笔记 1'));
     await tester.pumpAndSettle();
 
     final text = tester.widget<Text>(find.text(excerpt));

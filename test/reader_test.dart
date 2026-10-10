@@ -35,7 +35,7 @@ Uint8List epub({bool missingChapter = false, String? extraPath}) {
   );
   add('OPS/images/a.png', 'fake-image');
   if (extraPath != null) add(extraPath, 'invalid');
-  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+  return Uint8List.fromList(ZipEncoder().encode(archive));
 }
 
 void main() {
@@ -107,7 +107,7 @@ void main() {
         '<nav><ol><li><a href="cover.xhtml">封面</a></li><li><a href="titlepage.xhtml">书名页</a></li></ol></nav>',
       );
       final content = await parser.parse(
-        Uint8List.fromList(ZipEncoder().encode(archive)!),
+        Uint8List.fromList(ZipEncoder().encode(archive)),
         'test.epub',
       );
       expect(content.toc.map((e) => e.chapter), [0, 1]);
@@ -146,11 +146,11 @@ void main() {
             : '<nav epub:type="toc"><ol><li><a href="c.xhtml">章</a><ol><li><a href="c.xhtml#one">节一</a></li><li><a href="c.xhtml#two">节二</a></li></ol></li></ol></nav>',
       );
       final content = await parser.parse(
-        Uint8List.fromList(ZipEncoder().encode(archive)!),
+        Uint8List.fromList(ZipEncoder().encode(archive)),
         'test.epub',
       );
       expect(content.toc.single.block, isNull);
-      expect(content.toc.single.children.map((e) => e.block), [0, 2]);
+      expect(content.toc.single.children.map((e) => e.block), [1, 3]);
       expect(content.toc.single.children.map((e) => e.chapter), [0, 0]);
     });
   }
@@ -182,7 +182,7 @@ void main() {
       final content = await parser.parse(epub(), 'book.epub');
       expect(content.title, '测试书');
       expect(content.author, '作者');
-      expect(content.chapters.last.blocks.length, 1);
+      expect(content.chapters.last.blocks.length, 2);
       expect(content.chapters.map((c) => c.title), ['第一章', '第二章']);
       final markup = content.chapters.first.blocks.join();
       expect(markup, isNot(contains('<script')));

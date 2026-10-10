@@ -12,6 +12,13 @@
 /// ```
 library;
 
+export 'src/widgets/reader_menu.dart';
+export 'src/widgets/catalog_sheet.dart' show CatalogSheet;
+export 'src/widgets/reader_selection_toolbar.dart';
+export 'src/widgets/reader_auto_read_controls.dart';
+export 'src/widgets/auto_turn_bar.dart';
+export 'src/controller/reader_seek_preview.dart';
+
 export 'src/battery.dart';
 export 'src/book_reader_controller.dart';
 export 'src/book_reader_widget.dart';
@@ -35,3 +42,5 @@ export 'src/text_actions.dart'
         ReaderSegmentTap,
         ReaderSegmentTapCallback;
 export 'src/underline/reader_underline_store.dart';
+
+export 'src/widgets/reader_comment_badge.dart';

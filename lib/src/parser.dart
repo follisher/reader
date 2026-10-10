@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
 import 'models.dart';
+import 'epub_heading.dart';
 
 abstract interface class BookParser {
   bool supports(BookFormat format);
@@ -227,6 +228,39 @@ class LocalBookParser implements BookParser {
           kind == BookChapterKind.content) {
         continue;
       }
+      // Keep addresses in the original document before sanitizing/flattening it.
+      // Continuous selections can then resolve in the native paginated reader.
+      String sourceSelector(dom.Element node) {
+        final parent = node.parent;
+        final tag = node.localName!;
+        final siblings = parent?.children
+            .where((child) => child.localName == tag)
+            .toList();
+        final component =
+            '$tag:nth-of-type(${(siblings?.indexOf(node) ?? 0) + 1})';
+        return parent == null
+            ? component
+            : '${sourceSelector(parent)} > $component';
+      }
+
+      void assignSelectors(dom.Element node, String selector) {
+        node.attributes['data-reader-selector'] = selector;
+        final counts = <String, int>{};
+        for (final child in node.children) {
+          final tag = child.localName!;
+          final index = counts.update(
+            tag,
+            (count) => count + 1,
+            ifAbsent: () => 1,
+          );
+          assignSelectors(child, '$selector > $tag:nth-of-type($index)');
+        }
+      }
+
+      final sourceBody = document.body;
+      if (sourceBody != null) {
+        assignSelectors(sourceBody, sourceSelector(sourceBody));
+      }
       // Many covers wrap a bitmap in SVG. Convert local bitmap references to
       // the same offline image path used by ordinary HTML images.
       for (final svg in document.querySelectorAll('svg')) {
@@ -286,13 +320,8 @@ class LocalBookParser implements BookParser {
             }
           }
         }
-        // The primary chapter heading is represented by the directory. Keep
-        // h2/h3 in the body so readers can see the source's sub-sections.
-        if (node is dom.Element &&
-            node.localName == 'h1' &&
-            kind == BookChapterKind.content) {
-          return;
-        }
+        // Preserve original heading levels and their anchors. Rendering decides
+        // whether an additional chapter heading is needed.
         // EPUB chapters often wrap all paragraphs in a single div/section.
         // Flatten structural wrappers so position remains paragraph-level.
         if (node is dom.Element &&
@@ -562,20 +591,36 @@ BookTocEntry _addHeadingEntriesToEntry(
   final chapter = chapters[chapterIndex];
   if (chapter.kind != BookChapterKind.content) return entry;
   final headings = <BookTocEntry>[];
+  final stack = <(int, List<BookTocEntry>)>[];
+  bool opening = true;
   for (var block = 0; block < chapter.blocks.length; block++) {
-    final heading = html
-        .parseFragment(chapter.blocks[block])
-        .querySelector('h2,h3');
-    final title = heading?.text.trim() ?? '';
-    if (title.isEmpty) continue;
-    headings.add(
-      BookTocEntry(
+    final fragment = html.parseFragment(chapter.blocks[block]);
+    final nodes = fragment.querySelectorAll('h1,h2,h3,h4,h5,h6');
+    if (nodes.isEmpty && (fragment.text ?? '').trim().isNotEmpty) {
+      opening = false;
+    }
+    for (final heading in nodes) {
+      final title = heading.text.trim();
+      if (title.isEmpty) continue;
+      if (opening &&
+          normalizeEpubHeading(title) == normalizeEpubHeading(entry.title)) {
+        continue;
+      }
+      final level = int.parse(heading.localName!.substring(1));
+      while (stack.isNotEmpty && stack.last.$1 >= level) {
+        stack.removeLast();
+      }
+      final children = <BookTocEntry>[];
+      final item = BookTocEntry(
         id: '${entry.id}#heading-$block',
         title: title,
         chapter: chapterIndex,
         block: block,
-      ),
-    );
+        children: children,
+      );
+      (stack.isEmpty ? headings : stack.last.$2).add(item);
+      stack.add((level, children));
+    }
   }
   if (headings.isEmpty) return entry;
   return BookTocEntry(

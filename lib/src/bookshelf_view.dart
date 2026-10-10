@@ -84,17 +84,21 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       final files = await openFiles(
         acceptedTypeGroups: [
           const XTypeGroup(
-            label: 'UTF-8 TXT',
-            extensions: ['txt'],
-            uniformTypeIdentifiers: ['public.plain-text'],
+            label: 'TXT / EPUB',
+            extensions: ['txt', 'epub'],
+            uniformTypeIdentifiers: [
+              'public.plain-text',
+              'org.idpf.epub-container',
+            ],
           ),
         ],
       );
       final messages = <String>[];
       for (final file in files) {
         try {
-          if (!file.name.toLowerCase().endsWith('.txt')) {
-            throw const FormatException('本地导入仅支持 UTF-8 TXT 文件');
+          final name = file.name.toLowerCase();
+          if (!name.endsWith('.txt') && !name.endsWith('.epub')) {
+            throw const FormatException('请选择 UTF-8 TXT 或 EPUB 文件');
           }
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
@@ -170,12 +174,14 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
               : text;
           if (text.isEmpty && quote.isEmpty) continue;
           final key =
+              note['id'] as String? ??
               '${note['chapterIndex']}:${note['start']}:${note['end']}'
-              '${kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}';
+                  '${kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}';
           result.add(
             ExcerptItem(
               ref: ReaderNoteRef(bookId: book.id, kind: kind, noteKey: key),
               book: book,
+              anchor: ReaderAnchor.fromJson(note['anchor']),
               chapterIndex: note['chapterIndex'] as int? ?? 0,
               startOffset: note['start'] as int? ?? 0,
               chapterTitle: note['chapterTitle'] as String? ?? '',
@@ -269,6 +275,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       book: item.book,
       chapterIndex: item.chapterIndex,
       charOffset: item.startOffset,
+      anchor: item.anchor,
     );
     if (widget.onReaderOpen != null) {
       widget.onReaderOpen!(request);
@@ -333,8 +340,9 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
         final rows = await repository.loadNotes(item.ref.bookId, item.ref.kind);
         rows.removeWhere((note) {
           final key =
+              note['id'] as String? ??
               '${note['chapterIndex']}:${note['start']}:${note['end']}'
-              '${item.ref.kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}';
+                  '${item.ref.kind == ReaderNoteKind.comment ? ':${note['createdAt']}' : ''}';
           return key == item.ref.noteKey;
         });
         await repository.saveNotes(item.ref.bookId, item.ref.kind, rows);
@@ -1447,7 +1455,7 @@ class _ShelfEmpty extends StatelessWidget {
           ),
           if (allEmpty) ...[
             const SizedBox(height: 12),
-            const Text('支持导入 UTF-8 TXT，导入后可离线阅读'),
+            const Text('支持导入 UTF-8 TXT / EPUB，导入后可离线阅读'),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: busy ? null : onImport,

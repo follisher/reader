@@ -20,3 +20,15 @@ with SQLite stores. Each vertical paragraph owns a ReaderProse, so selection
 does not span paragraphs. Paid content is not integrated in the vertical view;
 upstream paginated views are retained.
 Re-evaluate these patches when upgrading; do not edit the global pub cache.
+# Shared EPUB menu integration
+
+- Export `ReaderMenu` and `ReaderSeekPreview` so EPUB can reuse the TXT menu.
+- `ReaderMenu.supportedFlipTypes` lets each engine expose only implemented modes;
+  the default still includes every TXT flip type.
+- Share `ReaderAutoReadBar`, `showReaderAutoReadSettings`, and the page timer
+  progress bar with EPUB. The speed sheet exposes slow/fast and exit actions;
+  each surface retains ownership of its motion and pause/resume lifecycle.
+
+- 移除 TXT 正文段尾评论气泡及统计缓存；保留评论原文高亮和点击高亮打开评论的回调。
+
+- TXT 纵向阅读的惰性段落共享同章选区，支持拖动手柄跨段、长按后拖动扩展，以及完整范围的划线、评论高亮与删除；首行缩进不计入选中文字。

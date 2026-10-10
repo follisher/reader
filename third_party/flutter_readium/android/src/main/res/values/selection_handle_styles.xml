@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Applied before the Readium WebView is created. Chromium snapshots these
+         attributes for its native selection handles. -->
+    <style name="FlutterReadiumSelectionHandlesDark">
+        <item name="android:colorAccent">#FF000000</item>
+        <item name="android:colorControlActivated">#FF000000</item>
+    </style>
+
+    <style name="FlutterReadiumSelectionHandlesLight">
+        <item name="android:colorAccent">#FFF5F5F5</item>
+        <item name="android:colorControlActivated">#FFF5F5F5</item>
+    </style>
+</resources>

@@ -36,6 +36,7 @@ class CatalogSheet extends StatefulWidget {
     this.onDeleteComment,
     this.scrollController,
     this.isChapterLocked,
+    this.initialTabIndex = 1,
   });
 
   final String bookTitle;
@@ -69,6 +70,9 @@ class CatalogSheet extends StatefulWidget {
   /// 判定某章是否为「未解锁付费章」：目录里该章右侧显示锁 icon，解锁后不显示。
   /// 为空时全部不显示锁。
   final bool Function(int chapterIndex)? isChapterLocked;
+
+  /// 初始标签页：0 详情、1 目录、2 笔记。默认从底部“目录”入口进入目录页。
+  final int initialTabIndex;
 
   @override
   State<CatalogSheet> createState() => _CatalogSheetState();
@@ -131,7 +135,7 @@ class _CatalogSheetState extends State<CatalogSheet>
 
   late final TabController _tab = TabController(
     length: 3,
-    initialIndex: 1, // 默认落在「目录」（入口即目录按钮）
+    initialIndex: widget.initialTabIndex.clamp(0, 2),
     vsync: this,
   );
 

@@ -395,6 +395,7 @@ void main() {
         ReaderNoteKind.comment,
       )).single;
       expect(saved['text'], '阅读想法');
+      expect(find.byType(engine.ReaderCommentBadge), findsNothing);
       expect(saved['end'] as int, greaterThan(saved['start'] as int));
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();

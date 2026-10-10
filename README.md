@@ -22,14 +22,16 @@ dependencies:
 
 - 三列网格书架、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
 - 跨书摘录流集中展示划线和评论，支持搜索、按书筛选、排序、随机回顾、复制、删除及跳回原文。
-- 多选导入本地 UTF-8 TXT 文件；内置 EPUB 仍可正常解析和阅读。
+- 多选导入本地 UTF-8 TXT 和 EPUB 文件。
 - EPUB 元数据、spine 章节顺序、正文与内嵌位图读取；书架会显示 EPUB 声明的封面，没有封面时使用默认图标。
 - TXT 常见中文章节名与 `Chapter N` 识别；无章节文本自动分段。
 - 默认采用 `flutter_book_reader`：上下连续滚动、真实分页、平移/覆盖/仿真/无动画切页。
 - 全屏沉浸阅读，轻点正文中间唤起菜单；设置中切换翻页模式、字号、行距、纸张主题与亮度蒙层。
 - 自动翻页及速度调节；连续滚动模式自动滚动，进入后台停止自动阅读。
 - 本地章节缓存分文件保存，阅读时仅加载清单及当前/相邻章节。导入和旧缓存升级仍需完整解析一次。
-- EPUB 默认使用文本重排；菜单中的“图文阅读”切换到兼容 HTML 阅读页，保留图片及原有嵌套目录。
+- Android/iOS 的本地 EPUB 默认使用 Readium 图文阅读，复用 TXT 的菜单、设置面板、评论输入和分享卡片。桌面平台及自定义文本源沿用文本引擎，不再提供旧的“图文阅读”切换入口。
+- EPUB 阅读设置支持左右正文分页和上下无缝滚动。上下模式使用同一个按段落懒渲染的滚动容器，提前加载相邻章节与图片尺寸，章节交界无需松手或切换页面。左右模式继续使用 Readium 原生分页；两种模式共享章节、段落/DOM 锚点与笔记。
+- EPUB 保留原文卷、章、节标题层级；正文开头已有对应标题时不额外补同名标题，缺失时才补充。原书目录层级保持不变，缺少子目录时按正文标题级别推导。
 - 新阅读页保存章节与字符位置，400ms 防抖，退出/后台立即提交；旧段落位置自动转换。图文页沿用段落位置及 700ms 防抖。
 - SHA-256 去重。导入结果会区分新增图书与已合并的重复文件；图书副本、书架、进度和设置均保存在应用私有目录，不会修改用户原文件。
 
@@ -67,6 +69,7 @@ BookshelfView(
           book: request.book,
           initialChapter: request.chapterIndex,
           initialCharOffset: request.charOffset,
+          initialAnchor: request.anchor,
         ),
       ),
     );
@@ -74,7 +77,7 @@ BookshelfView(
 )
 ```
 
-`onReaderOpen` 用于从摘录卡片精确定位到章节字符位置。它是可选回调；不传时摘录卡片会回退到 `onBookTap`，只能打开书籍而不能保证定位到该条摘录。
+`onReaderOpen` 按书籍格式定位：TXT 使用章节字符位置，EPUB 使用 `anchor`，没有 `anchor` 的旧摘录恢复到对应章节。它是可选回调；不传时摘录卡片会回退到 `onBookTap`，只能打开书籍而不能保证定位到该条摘录。
 
 应用退出前或根容器释放后，调用 `readerRepository.close()` 关闭数据库。
 
@@ -130,11 +133,11 @@ BookshelfView(
 
 ### 跟随主应用夜间模式
 
-`ReaderView`、`HtmlReaderView`、`openReader` 和 `openReaderRequest` 默认跟随主应用 `Theme.of(context).brightness`：应用夜间模式使用深色正文，返回日间模式恢复阅读器保存的日间纸张主题（若原先保存的是夜间主题则使用白色）。文本和图文阅读均支持，系统主题变化也会跟随。应用模式不会覆盖保存的纸张偏好、字号和阅读位置。
+`ReaderView`、`openReader` 和 `openReaderRequest` 的文本阅读默认跟随主应用 `Theme.of(context).brightness`：应用夜间模式使用深色正文，返回日间模式恢复阅读器保存的日间纸张主题（若原先保存的是夜间主题则使用白色）。文本阅读会跟随系统主题变化。应用模式不会覆盖保存的纸张偏好、字号和阅读位置。
 
-阅读器菜单仍可手动调整文本阅读主题；后续主应用明暗模式变化或重新打开正文时重新跟随。图文阅读跟随时隐藏独立夜间切换按钮。
+阅读器菜单仍可手动调整文本阅读主题；后续主应用明暗模式变化或重新打开正文时重新跟随。
 
-所有入口默认跟随，不需要修改主仓库调用方式。若某个场景需要独立阅读主题，可显式设置 `followHostTheme: false`，Widget 和统一导航方法都支持。
+文本阅读入口默认跟随，不需要修改主仓库调用方式。若某个场景需要独立阅读主题，可显式设置 `followHostTheme: false`，Widget 和统一导航方法都支持。
 
 ### 外部使用书籍封面
 
@@ -189,7 +192,7 @@ readerCatalogProvider.overrideWithValue(catalog)
 
 当前版本将普通 EPUB/TXT 副本及书签、划线、评论保存在应用沙盒中。它不提供 DRM、图书加密、密钥授权、账号或云同步。未来接入加密内容时，应通过 `BookContent` 接口按章提供已解密内容，避免将整本明文写入磁盘。
 
-本模块不是完整的 EPUB 排版引擎：不支持复杂外部 CSS、固定版式、音视频、DRM；SVG 图片可能无法显示。默认文本阅读不会呈现原书图片和富文本样式，请使用“图文阅读”查看。TXT 需要 UTF-8 编码，GBK/UTF-16 文件应先转换。
+本模块不是完整的 EPUB 排版引擎：不支持复杂外部 CSS、固定版式、音视频、DRM；SVG 图片可能无法显示。桌面平台的文本阅读不会呈现原书图片和富文本样式。TXT 需要 UTF-8 编码，GBK/UTF-16 文件应先转换。
 
 ## 独立演示
 
@@ -233,11 +236,21 @@ ReaderView(book: shelfBook, source: remoteSource, controller: controller);
 
 `BookContent` 仍可使用内存章节；大型/远程内容实现 `OnDemandBookContent`，让 `chapters` 只返回元数据，通过 `loadChapter(index)` 读取正文。调用方统一使用 `content.readChapter(index)`，不要依赖缓存对象的 `chapters[i].blocks` 已经加载。
 
-数据库当前为 v8。升级会保留原书架、阅读进度、设置和 `reader_notes` payload，并回填用于书架聚合、摘录搜索与排序的查询列和索引。章节缓存仍为 v2，原始图书副本仍保留。
+数据库当前为 v10，新增 `anchor_json` 保存完整 EPUB Locator。升级保留原书架、阅读进度、设置和 `reader_notes` payload。章节缓存仍为 v2，原始图书副本仍保留。新笔记使用独立 ID 和 `anchor`，旧文本坐标笔记继续保留；EPUB 旧笔记恢复到对应章节，新笔记从摘录流跳回 EPUB 选区；不会因旧字符偏移切换到文本阅读器。宿主的 `onReaderOpen` 必须传递 `request.anchor`（见上例）。
 
-正文支持长按划线、评论、复制、浏览器查询（百度）和系统文字分享。评论输入层保存后刷新段尾角标，点击角标可查看和删除段评；目录中的笔记支持查看、定位和删除。书签、划线、评论均存入本地 `reader.sqlite`，重开阅读器后恢复，移除图书时一起清理。写入失败保留当前会话的数据并显示重试入口；评论输入框保留草稿。首次读取失败会显示打开失败，避免用空数据覆盖已有笔记。
+## Readium 宿主配置
 
-自定义 `BookshelfRepository` 需实现 `loadNotes` / `saveNotes`，后者按书籍和 `ReaderNoteKind` 原子替换列表。若同时实现可选的 `BookshelfInsightsRepository`，书架会使用批量聚合、实时摘录流与精确单条删除；未实现时自动回退到基础仓库接口。自定义章节源也使用书架 `book.id` 保存笔记，需保证书籍 ID、章节顺序及正文稳定。锚点使用引擎字符坐标，当前固定首行缩进为 2；字号和翻页模式变化不会改变坐标。连续滚动模式的选区限于单段，图文阅读暂不提供这些批注交互。
+要求 Flutter >= 3.44.4。Android 宿主需要 `FlutterFragmentActivity`、minSdk >= 24，以及 `compileOptions.isCoreLibraryDesugaringEnabled = true` 和 `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")`。示例工程已配置。iOS 要求 15.0；CocoaPods 配置可参考 `example/ios/Podfile`，Readium pods 使用 3.11.x。
+
+`ReaderView` 会自动分流。自定义仓库还需实现 `PublicationFileRepository.publicationPath`，返回本地原始 EPUB 路径。传入文本 `source` 或 `BookReaderController` 时保留自定义文本引擎。旧的 `HtmlReaderView` 与 `useLegacyTextReader` 入口已移除。Readium 当前是单出版物会话，不能同时打开两个 EPUB 页面；适配器会阻止第二个会话覆盖第一个。
+
+EPUB 支持选区复制、划线、评论、查询、分享卡片、书签、笔记删除/跳转和 Locator 恢复。横向分页使用原生选区，纵向使用连续正文选区并保留原文 DOM 地址。横向分页/纵向滚动单独记忆，不覆盖 TXT 的仿真翻页偏好。自动阅读与 TXT 共用底部入口及“慢—快 / 退出自动阅读”面板，不显示秒数。横向按速度自动翻页并显示计时进度，纵向持续匀速滚动；打开面板或菜单时暂停，关闭后等待布局稳定再继续，触摸正文临时暂停，后台及全书末尾停止。仿真卷页尚未实现。评论使用正文高亮，点击高亮文字打开评论弹窗；TXT 与 EPUB 均不显示段尾评论气泡。目录保留原书顺序，进度滑块按章节等权跳转。没有 Locator 的旧进度首次打开图文页恢复到对应章节；旧字符偏移不能保证映射到原 EPUB 的精确文字。
+
+横向 Readium 读取原始 EPUB，原文本解析器的 HTML 清理不作用于这个渲染路径。纵向连续正文使用离线清理后的 HTML 与本地图片，复杂原书 CSS 的呈现可能与横向模式不同。前文关于禁用书内脚本及外部资源的描述适用于离线解析器，不能作为 Readium 路径的安全保证。书籍内容的资源与链接策略需按宿主应用要求配置并验证。
+
+正文支持长按划线、评论、复制、浏览器查询（百度）和系统文字分享。评论输入层保存后刷新正文高亮，点击高亮文字可查看和删除评论；目录中的笔记支持查看、定位和删除。书签、划线、评论均存入本地 `reader.sqlite`，重开阅读器后恢复，移除图书时一起清理。写入失败保留当前会话的数据并显示重试入口；评论输入框保留草稿。首次读取失败会显示打开失败，避免用空数据覆盖已有笔记。
+
+自定义 `BookshelfRepository` 需实现 `loadNotes` / `saveNotes`，后者按书籍和 `ReaderNoteKind` 原子替换列表。若同时实现可选的 `BookshelfInsightsRepository`，书架会使用批量聚合、实时摘录流与精确单条删除；未实现时自动回退到基础仓库接口。自定义章节源也使用书架 `book.id` 保存笔记，需保证书籍 ID、章节顺序及正文稳定。锚点使用引擎字符坐标，当前固定首行缩进为 2；字号和翻页模式变化不会改变坐标。连续滚动模式的选区限于单段；EPUB 批注使用独立的 Locator 锚点。
 
 自动阅读没有接入屏幕常亮插件。Android 系统版本/宿主 target SDK 可能限制隐藏系统栏，沉浸模式需在宿主真机验证。新增原生插件后需完整重启宿主应用，热重载无法注册分享和浏览器插件。
 

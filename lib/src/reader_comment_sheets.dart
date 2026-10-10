@@ -140,7 +140,7 @@ class _ReaderParagraphCommentsState extends State<ReaderParagraphComments> {
     try {
       await widget.onDelete(comment);
       if (mounted) {
-        setState(() => _comments.removeWhere((c) => c.key == comment.key));
+        setState(() => _comments.removeWhere((c) => identical(c, comment)));
       }
     } catch (_) {
       if (mounted) setState(() => _error = '删除失败，请重试');

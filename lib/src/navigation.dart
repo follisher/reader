@@ -36,6 +36,7 @@ Future<void> openReaderRequest(
           followHostTheme: followHostTheme,
           initialChapter: request.chapterIndex,
           initialCharOffset: request.charOffset,
+          initialAnchor: request.anchor,
         ),
       ),
     ),

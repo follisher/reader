@@ -7,4 +7,7 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # This is the upstream plugin's standalone sample. It has its own
+    # development-only dependencies and is not part of this package.
+    - third_party/flutter_readium/example/**
 include: package:flutter_lints/flutter.yaml

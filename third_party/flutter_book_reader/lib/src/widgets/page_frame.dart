@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
@@ -11,6 +12,7 @@ import '../reader_theme.dart';
 import '../text_actions.dart';
 import '../underline/reader_underline_store.dart';
 import 'battery_indicator.dart';
+import 'reader_selection_toolbar.dart';
 
 /// 顶部小标题栏：章首显示书名、非章首显示章节标题；横向 / 纵向模式共用。
 class ReaderHeaderBar extends StatelessWidget {
@@ -201,6 +203,49 @@ class ReaderPageContent extends StatelessWidget {
 ///
 /// 选中规则：长按某段落 —— 若该段 ≤ 2 行，选中整段；若 ≥ 3 行，选中手指所在行
 /// 及其上下各一行（共 3 行）。选中后在其上方弹出「复制 / 划线 / 查询 / 分享」工具条。
+class ReaderProseSelectionGroup {
+  final _members = <_ReaderProseState>{};
+  _ReaderProseState? _owner;
+  int _start = 0, _end = 0;
+
+  List<_ReaderProseState> get _ordered => _members
+      .where((state) => state.mounted && state.widget.chapterIndex == _owner?.widget.chapterIndex)
+      .toList()..sort((a, b) => a.widget.pageStartOffset.compareTo(b.widget.pageStartOffset));
+
+  void _select(_ReaderProseState owner, int start, int end) {
+    _owner = owner;
+    _start = start;
+    _end = end;
+    for (final state in _ordered) {
+      state._mutateSelection(() {
+        state._selIndentWidth = owner._selIndentWidth;
+        state._startBlock = null;
+        state._endBlock = null;
+        for (var i = 0; i < state.widget.page.length; i++) {
+          final lo = state._chapterToPlain(i, start);
+          final hi = state._chapterToPlain(i, end);
+          if (hi <= lo) continue;
+          state._startBlock ??= i;
+          if (state._startBlock == i) state._startOff = lo;
+          state._endBlock = i;
+          state._endOff = hi;
+        }
+      });
+    }
+    owner._selText = _ordered.map((state) => state._computeLocalSelText())
+        .where((text) => text.isNotEmpty).join('\n');
+    owner._toolbar?.markNeedsBuild();
+  }
+
+  void clear() {
+    final states = _members.toList();
+    _owner = null;
+    for (final state in states) {
+      if (state.mounted) state._clearLocalSelection();
+    }
+  }
+}
+
 class ReaderProse extends StatefulWidget {
   const ReaderProse({
     super.key,
@@ -212,9 +257,11 @@ class ReaderProse extends StatefulWidget {
     this.pageStartOffset = 0,
     this.leadingParagraphStart,
     this.headingOffsets = const <int>{},
+    this.selectionGroup,
   });
 
   final ReaderPage page;
+  final ReaderProseSelectionGroup? selectionGroup;
   final ReaderConfig config;
   final bool bounded;
 
@@ -237,6 +284,7 @@ class ReaderProse extends StatefulWidget {
 }
 
 class _ReaderProseState extends State<ReaderProse> {
+  void _mutateSelection(VoidCallback action) => setState(action);
   static final RegExp _leadingIndent = RegExp(r'^[　\s]+');
 
   ReaderConfig get _config => widget.config;
@@ -259,15 +307,11 @@ class _ReaderProseState extends State<ReaderProse> {
   final Map<int, GlobalKey> _keys = <int, GlobalKey>{};
 
   OverlayEntry? _toolbar;
+  bool _selectionAttached = true;
 
   /// 各块首字符在本章的起始偏移（前缀和，随页面变化重算一次）。
   /// 让 [_blockChapterStart] 由原来的 O(i) 变为 O(1)，消除单页 O(n²)。
   List<int> _blockStarts = const <int>[];
-
-  /// 段评角标缓存：按块下标存 (段首偏移, 段尾偏移, 评论数)，仅在页面或评论列表
-  /// 变化时重算。避免选区拖动等高频重建里反复做 O(段落 × 评论) 统计。
-  List<(int, int, int)?>? _badgeCache;
-  Object? _badgeCacheKey;
 
   /// 缩进占位宽度缓存：仅取决于缩进串 / 字体 / 字号 / 系统缩放，页内恒定。
   static final _indentWidths = <(String, TextStyle, TextScaler), double>{};
@@ -276,6 +320,7 @@ class _ReaderProseState extends State<ReaderProse> {
   void initState() {
     super.initState();
     _recomputeBlockStarts();
+    widget.selectionGroup?._members.add(this);
   }
 
   /// 重算各块章内起始偏移前缀和，并使依赖页面的缓存失效。
@@ -288,8 +333,6 @@ class _ReaderProseState extends State<ReaderProse> {
       sum += widget.page[i].length;
     }
     _blockStarts = starts;
-    _badgeCache = null;
-    _badgeCacheKey = null;
   }
 
   @override
@@ -311,30 +354,58 @@ class _ReaderProseState extends State<ReaderProse> {
         _removeToolbar();
         _draggingHandle = false;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              _startBlock = null;
-              _endBlock = null;
-              _selText = '';
-            });
-          }
+          if (mounted) _clearSelection();
         });
       }
     }
   }
 
   @override
+  void activate() {
+    super.activate();
+    _selectionAttached = true;
+  }
+
+  @override
+  void deactivate() {
+    _selectionAttached = false;
+    _removeToolbar();
+    _startBlock = null;
+    _endBlock = null;
+    _selText = '';
+    super.deactivate();
+  }
+
+  @override
   void dispose() {
+    final group = widget.selectionGroup;
+    group?._members.remove(this);
+    if (group?._owner == this) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (group?._owner == this) group?.clear();
+      });
+    }
     _removeToolbar();
     super.dispose();
   }
 
   void _removeToolbar() {
-    _toolbar?.remove();
+    final toolbar = _toolbar;
     _toolbar = null;
+    toolbar?.remove();
+    toolbar?.dispose();
   }
 
   void _clearSelection() {
+    final group = widget.selectionGroup;
+    if (group?._owner != null) {
+      group!.clear();
+    } else {
+      _clearLocalSelection();
+    }
+  }
+
+  void _clearLocalSelection() {
     _removeToolbar();
     _draggingHandle = false;
     if (mounted) {
@@ -353,14 +424,15 @@ class _ReaderProseState extends State<ReaderProse> {
     _toolbar?.markNeedsBuild();
   }
 
-  bool get _hasSel => _startBlock != null && _endBlock != null;
+  bool get _hasLocalSel => _startBlock != null && _endBlock != null;
+  bool get _hasSel => _hasLocalSel || widget.selectionGroup?._owner == this;
 
   /// 块 i 内可选起点（段首块跳过缩进占位符 offset 0）。
   int _minBase(int i) => widget.page[i].isParagraphStart ? 1 : 0;
 
   /// 块 i 的选区在其内部的 [lo, hi)（不在选区内返回 null）。
   TextSelection? _localSel(int i) {
-    if (!_hasSel || i < _startBlock! || i > _endBlock!) return null;
+    if (!_hasLocalSel || i < _startBlock! || i > _endBlock!) return null;
     final String plain = _plainForSpan(widget.page[i], _selIndentWidth);
     final int lo = i == _startBlock! ? _startOff : _minBase(i);
     final int hi = i == _endBlock! ? _endOff : plain.length;
@@ -370,7 +442,16 @@ class _ReaderProseState extends State<ReaderProse> {
 
   /// 汇总跨块选中文字（段落间以换行分隔、剔除缩进占位符）。
   String _computeSelText() {
-    if (!_hasSel) return '';
+    final group = widget.selectionGroup;
+    if (group?._owner == this) {
+      return group!._ordered.map((state) => state._computeLocalSelText())
+          .where((text) => text.isNotEmpty).join('\n');
+    }
+    return _computeLocalSelText();
+  }
+
+  String _computeLocalSelText() {
+    if (!_hasLocalSel) return '';
     final StringBuffer sb = StringBuffer();
     for (int i = _startBlock!; i <= _endBlock!; i++) {
       final TextSelection? ls = _localSel(i);
@@ -445,6 +526,8 @@ class _ReaderProseState extends State<ReaderProse> {
 
   /// 当前选区对应的本章 [start, end)；无选中返回 null。
   (int, int)? _selChapterRange() {
+    final group = widget.selectionGroup;
+    if (group?._owner == this) return (group!._start, group._end);
     if (!_hasSel) return null;
     final int s = _plainToChapter(_startBlock!, _startOff);
     final int e = _plainToChapter(_endBlock!, _endOff);
@@ -499,15 +582,39 @@ class _ReaderProseState extends State<ReaderProse> {
     return merged;
   }
 
-  /// 划线颜色：与选中高亮同色系但更深（暗色主题下相应提亮以保证可见）。
-  Color get _underlineColor {
-    final ReaderTheme t = _config.theme;
-    final HSLColor h = HSLColor.fromColor(t.selectionColor);
-    final double sat = (h.saturation + 0.12).clamp(0.0, 1.0);
-    final double light = t.isDark
-        ? (h.lightness + 0.16).clamp(0.0, 1.0)
-        : (h.lightness - 0.24).clamp(0.0, 1.0);
-    return h.withSaturation(sat).withLightness(light).toColor();
+  /// 块 i 内评论引用原文的高亮区间。重叠评论先合并，避免背景重复叠色。
+  List<TextSelection> _commentRangesFor(int i, List<Comment> chapterComments) {
+    if (chapterComments.isEmpty) return const <TextSelection>[];
+    final int bc = _blockChapterStart(i);
+    final int be = bc + widget.page[i].length;
+    final List<TextSelection> ranges = <TextSelection>[];
+    for (final Comment comment in chapterComments) {
+      final int start = comment.start.clamp(bc, be);
+      final int end = comment.end.clamp(bc, be);
+      if (end <= start) continue;
+      final int plainStart = _chapterToPlain(i, start);
+      final int plainEnd = _chapterToPlain(i, end);
+      if (plainEnd > plainStart) {
+        ranges.add(
+          TextSelection(baseOffset: plainStart, extentOffset: plainEnd),
+        );
+      }
+    }
+    if (ranges.length < 2) return ranges;
+    ranges.sort((a, b) => a.start.compareTo(b.start));
+    final List<TextSelection> merged = <TextSelection>[ranges.first];
+    for (final TextSelection current in ranges.skip(1)) {
+      final TextSelection previous = merged.last;
+      if (current.start <= previous.end) {
+        merged[merged.length - 1] = TextSelection(
+          baseOffset: previous.start,
+          extentOffset: current.end > previous.end ? current.end : previous.end,
+        );
+      } else {
+        merged.add(current);
+      }
+    }
+    return merged;
   }
 
   double _measureIndent(String indent, TextStyle style, TextScaler scaler) {
@@ -563,64 +670,6 @@ class _ReaderProseState extends State<ReaderProse> {
         ),
         TextSpan(text: body),
       ],
-    );
-  }
-
-  /// 段尾「段评」角标：一个灰色小药丸（评论图标 + 数字），点击把段落信息抛给业务方。
-  InlineSpan _badgeSpan(ReaderSegmentScope scope, (int, int, int) badge) {
-    final (int start, int end, int count) = badge;
-    return WidgetSpan(
-      alignment: PlaceholderAlignment.middle,
-      child: Padding(
-        padding: const EdgeInsets.only(left: 6),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => scope.onTap!(
-            ReaderSegmentTap(
-              chapterIndex: widget.chapterIndex,
-              start: start,
-              end: end,
-              count: count,
-            ),
-          ),
-          child: _badgePill(count),
-        ),
-      ),
-    );
-  }
-
-  Widget _badgePill(int count) {
-    final Color c = _config.theme.subTextColor;
-    final String label = count > 99 ? '99+' : '$count';
-    // 描边对话气泡（含左下小尾巴）+ 居中评论数，观感更轻更精致。
-    return SizedBox(
-      width: 34,
-      height: 22,
-      child: Stack(
-        children: <Widget>[
-          Positioned.fill(
-            child: CustomPaint(painter: _CommentBubblePainter(c)),
-          ),
-          // 数字落在气泡主体（上部，尾巴在下方）。
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            height: 17,
-            child: Center(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 10,
-                  height: 1.0,
-                  color: c,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -697,6 +746,7 @@ class _ReaderProseState extends State<ReaderProse> {
     final int s = startOff.clamp(0, plain.length);
     final int e = endOff.clamp(0, plain.length);
 
+    widget.selectionGroup?.clear();
     setState(() {
       _selIndentWidth = indentWidth;
       _startBlock = blockIndex;
@@ -705,6 +755,8 @@ class _ReaderProseState extends State<ReaderProse> {
       _endOff = e;
       _selText = _computeSelText();
     });
+    widget.selectionGroup?._select(this,
+        _plainToChapter(blockIndex, s), _plainToChapter(blockIndex, e));
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _showSelectionOverlay());
   }
@@ -717,6 +769,7 @@ class _ReaderProseState extends State<ReaderProse> {
   }
 
   void _showSelectionOverlay() {
+    if (!mounted || !_selectionAttached) return;
     _removeToolbar();
     if (!_hasSel) return;
     _toolbar = OverlayEntry(builder: _buildSelectionOverlay);
@@ -725,8 +778,16 @@ class _ReaderProseState extends State<ReaderProse> {
 
   /// 首个非空选区盒（跨块向后找）：某端点所在块切片为空时（起点被拖到段尾等），
   /// 仍能取到实际可见的选区盒，避免 anchor 为 null 导致整个浮层消失。
-  (RenderParagraph, TextBox)? _firstSelBox() {
-    if (!_hasSel) return null;
+  (RenderParagraph, TextBox)? _firstSelBox({bool localOnly = false}) {
+    final group = widget.selectionGroup;
+    if (!localOnly && group?._owner == this) {
+      for (final state in group!._ordered) {
+        final box = state._firstSelBox(localOnly: true);
+        if (box != null) return box;
+      }
+      return null;
+    }
+    if (!_hasLocalSel) return null;
     for (int i = _startBlock!; i <= _endBlock!; i++) {
       final RenderParagraph? rp = _para(i);
       final TextSelection? ls = _localSel(i);
@@ -738,8 +799,16 @@ class _ReaderProseState extends State<ReaderProse> {
   }
 
   /// 末个非空选区盒（跨块向前找）。
-  (RenderParagraph, TextBox)? _lastSelBox() {
-    if (!_hasSel) return null;
+  (RenderParagraph, TextBox)? _lastSelBox({bool localOnly = false}) {
+    final group = widget.selectionGroup;
+    if (!localOnly && group?._owner == this) {
+      for (final state in group!._ordered.reversed) {
+        final box = state._lastSelBox(localOnly: true);
+        if (box != null) return box;
+      }
+      return null;
+    }
+    if (!_hasLocalSel) return null;
     for (int i = _endBlock!; i >= _startBlock!; i--) {
       final RenderParagraph? rp = _para(i);
       final TextSelection? ls = _localSel(i);
@@ -750,37 +819,36 @@ class _ReaderProseState extends State<ReaderProse> {
     return null;
   }
 
-  /// 起点手柄的全局锚点（首字左边界的行顶）。返回 (行顶全局坐标, 行高)。
-  (Offset, double)? _startAnchor() {
+  /// 起点手柄的全局锚点（首字左边界的行底）。
+  Offset? _startAnchor() {
     final (RenderParagraph, TextBox)? r = _firstSelBox();
     if (r == null) return null;
     final (RenderParagraph rp, TextBox fb) = r;
-    return (rp.localToGlobal(Offset(fb.left, fb.top)), fb.bottom - fb.top);
+    return rp.localToGlobal(Offset(fb.left, fb.bottom));
   }
 
-  /// 终点手柄的全局锚点（末字右边界的行底）。返回 (行底全局坐标, 行高)。
-  (Offset, double)? _endAnchor() {
+  /// 终点手柄的全局锚点（末字右边界的行底）。
+  Offset? _endAnchor() {
     final (RenderParagraph, TextBox)? r = _lastSelBox();
     if (r == null) return null;
     final (RenderParagraph rp, TextBox lb) = r;
-    return (rp.localToGlobal(Offset(lb.right, lb.bottom)), lb.bottom - lb.top);
+    return rp.localToGlobal(Offset(lb.right, lb.bottom));
   }
 
   /// 依据当前选区实时计算高亮盒的全局位置，绘制工具条 + 首尾可拖拽手柄。
   Widget _buildSelectionOverlay(BuildContext ctx) {
-    final (Offset, double)? start = _startAnchor();
-    final (Offset, double)? end = _endAnchor();
+    if (!mounted || !_selectionAttached) return const SizedBox.shrink();
+    final Offset? start = _startAnchor();
+    final Offset? end = _endAnchor();
     if (start == null || end == null) return const SizedBox.shrink();
 
-    final Offset startTop = start.$1; // 起点行顶
-    final double startH = start.$2;
-    final Offset endBottom = end.$1; // 终点行底
-    final double endH = end.$2;
+    final Offset startBottom = start;
+    final Offset endBottom = end;
 
-    final Color accent = _config.theme.accentColor;
     final MediaQueryData mq = MediaQuery.of(ctx);
     const double barH = 66;
-    final double selTop = startTop.dy; // 起点行顶
+    final double lineHeight = _config.fontSize * _config.lineHeight;
+    final double selTop = startBottom.dy - lineHeight;
     final double selBottom = endBottom.dy; // 终点行底
     final bool above = selTop - mq.padding.top > barH + 12;
     final double barTop = (above ? selTop - barH - 8 : selBottom + 8)
@@ -800,22 +868,15 @@ class _ReaderProseState extends State<ReaderProse> {
             onVerticalDragStart: (_) {},
           ),
         ),
-        // 起始手柄：点在上、竖线贴住首字左侧、覆盖起点所在行。
+        // Readium/系统选区的首尾手柄都悬挂在选区边界下方。
         _handle(
           key: const ValueKey<String>('sel-start'),
-          center: Offset(startTop.dx, startTop.dy),
-          height: startH,
-          accent: accent,
-          dotOnTop: true,
+          anchor: startBottom,
           isStart: true,
         ),
-        // 结束手柄：竖线贴住末字右侧、点在下、覆盖终点所在行。
         _handle(
           key: const ValueKey<String>('sel-end'),
-          center: Offset(endBottom.dx, endBottom.dy),
-          height: endH,
-          accent: accent,
-          dotOnTop: false,
+          anchor: endBottom,
           isStart: false,
         ),
         // 气泡小菜单：拖动手柄时隐藏，松手后再显示。
@@ -851,26 +912,15 @@ class _ReaderProseState extends State<ReaderProse> {
 
   Widget _handle({
     required Key key,
-    required Offset center,
-    required double height,
-    required Color accent,
-    required bool dotOnTop,
+    required Offset anchor,
     required bool isStart,
   }) {
-    const double dot = 12;
-    const double touch = 22; // 透明触摸外扩，便于抓取
-    const double bar = 2;
-    // 竖线落在文字间的缝隙上：起点竖线整体在首字左侧、终点在末字右侧，
-    // 不压到被选中的字（center.dx 为选区边界的接缝位置）。
-    final double nudge = isStart ? -bar / 2 : bar / 2;
-    // dotOnTop：竖线顶端(center 为线顶)向下延伸 height，圆点在其上方；
-    // 否则：竖线底端(center 为线底)向上延伸，圆点在其下方。
-    final double stackHeight = height + dot;
-    final double topY = dotOnTop ? center.dy - dot : center.dy - height;
+    const double handleSize = 22;
+    const double touch = 22;
     return Positioned(
       key: key,
-      left: center.dx - touch + nudge,
-      top: topY - touch,
+      left: anchor.dx - touch,
+      top: anchor.dy - touch,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanStart: (_) {
@@ -883,27 +933,25 @@ class _ReaderProseState extends State<ReaderProse> {
         onPanCancel: _endHandleDrag,
         child: SizedBox(
           width: touch * 2,
-          height: stackHeight + touch * 2,
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                if (dotOnTop) _dotWidget(dot, accent),
-                Container(width: bar, height: height, color: accent),
-                if (!dotOnTop) _dotWidget(dot, accent),
-              ],
-            ),
+          height: touch * 2 + handleSize,
+          child: Stack(
+            children: <Widget>[
+              Positioned(
+                left: touch - handleSize / 2,
+                top: touch,
+                child: CustomPaint(
+                  size: const Size.square(handleSize),
+                  painter: _NativeSelectionHandlePainter(
+                    color: _config.theme.accentColor,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
-
-  Widget _dotWidget(double size, Color accent) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-      );
 
   /// (b1,o1) 是否严格早于 (b2,o2)。
   bool _before(int b1, int o1, int b2, int o2) =>
@@ -911,10 +959,37 @@ class _ReaderProseState extends State<ReaderProse> {
 
   void _dragHandle(bool isStart, Offset globalPos) {
     if (!_hasSel) return;
-    // 手柄圆点在文字上/下方，把落点向文字内部偏移约半行，命中更准。
+    // 两个原生样式手柄都在文字下方，把触点向上回算到正文行内。
     final double bias = _config.fontSize * _config.lineHeight * 0.4;
-    final Offset biased =
-        Offset(globalPos.dx, globalPos.dy + (isStart ? bias : -bias));
+    final Offset biased = Offset(globalPos.dx, globalPos.dy - bias);
+
+    final group = widget.selectionGroup;
+    if (group?._owner == this) {
+      _ReaderProseState? hit;
+      int? block;
+      RenderParagraph? paragraph;
+      var distance = double.infinity;
+      for (final state in group!._ordered) {
+        for (final i in state._keys.keys) {
+          final rp = state._para(i);
+          if (rp == null) continue;
+          final top = rp.localToGlobal(Offset.zero).dy;
+          final bottom = top + rp.size.height;
+          final gap = biased.dy < top ? top - biased.dy : biased.dy > bottom ? biased.dy - bottom : 0.0;
+          if (gap < distance) {
+            distance = gap; hit = state; block = i; paragraph = rp;
+          }
+        }
+      }
+      if (hit == null || block == null || paragraph == null) return;
+      final offset = paragraph.getPositionForOffset(paragraph.globalToLocal(biased)).offset
+          .clamp(hit._minBase(block), hit._plainForSpan(hit.widget.page[block], _selIndentWidth).length);
+      final position = hit._plainToChapter(block, offset);
+      final start = isStart ? position.clamp(0, group._end - 1) : group._start;
+      final end = isStart ? group._end : position < start + 1 ? start + 1 : position;
+      group._select(this, start, end);
+      return;
+    }
 
     // 命中块：竖直落在哪个块内；落在块间空隙取竖直最近的块（支持跨段落）。
     int? hitBlock;
@@ -974,6 +1049,7 @@ class _ReaderProseState extends State<ReaderProse> {
   }
 
   Widget _selectionBar() {
+    if (!mounted || !_selectionAttached || !_hasSel) return const SizedBox.shrink();
     final ReaderLabels labels = ReaderLabels.of(context);
     final ReaderSelectionScope? scope = ReaderSelectionScope.of(context);
     final ReaderUnderlineScope? uScope = ReaderUnderlineScope.of(context);
@@ -1016,98 +1092,41 @@ class _ReaderProseState extends State<ReaderProse> {
       _clearSelection();
     }
 
-    Widget item(IconData icon, String label, VoidCallback onTap) => InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Icon(icon, size: 20, color: Colors.white),
-                const SizedBox(height: 5),
-                Text(label,
-                    style: const TextStyle(fontSize: 11, color: Colors.white)),
-              ],
-            ),
+    return ReaderSelectionToolbar(
+      actions: <ReaderSelectionToolbarAction>[
+        ReaderSelectionToolbarAction(
+          icon: Icons.content_copy_rounded,
+          label: labels.selectCopy,
+          onTap: () => act(ReaderTextAction.copy),
+        ),
+        ReaderSelectionToolbarAction(
+          icon: Icons.border_color_outlined,
+          label: labels.selectHighlight,
+          onTap: onAddHighlight,
+        ),
+        ReaderSelectionToolbarAction(
+          icon: Icons.mode_comment_outlined,
+          label: labels.selectComment,
+          onTap: () => act(ReaderTextAction.comment),
+        ),
+        if (hasOverlap)
+          ReaderSelectionToolbarAction(
+            icon: Icons.format_color_reset_outlined,
+            label: labels.selectRemoveHighlight,
+            onTap: onRemoveHighlight,
           ),
-        );
-
-    return Material(
-      color: Colors.transparent,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        decoration: BoxDecoration(
-          color: const Color(0xFF2B2B2B),
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: <BoxShadow>[
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.28),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
-            ),
-          ],
+        ReaderSelectionToolbarAction(
+          icon: Icons.search_rounded,
+          label: labels.selectQuery,
+          onTap: () => act(ReaderTextAction.query),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            item(Icons.content_copy_rounded, labels.selectCopy,
-                () => act(ReaderTextAction.copy)),
-            item(Icons.border_color_outlined, labels.selectHighlight,
-                onAddHighlight),
-            item(Icons.mode_comment_outlined, labels.selectComment,
-                () => act(ReaderTextAction.comment)),
-            if (hasOverlap)
-              item(Icons.format_color_reset_outlined,
-                  labels.selectRemoveHighlight, onRemoveHighlight),
-            item(Icons.search_rounded, labels.selectQuery,
-                () => act(ReaderTextAction.query)),
-            item(Icons.ios_share_rounded, labels.selectShare,
-                () => act(ReaderTextAction.share)),
-          ],
+        ReaderSelectionToolbarAction(
+          icon: Icons.ios_share_rounded,
+          label: labels.selectShare,
+          onTap: () => act(ReaderTextAction.share),
         ),
-      ),
+      ],
     );
-  }
-
-  /// 计算（并缓存）本页每个块的段评角标。仅在页面或评论列表变化时重算——
-  /// 选区拖动等高频重建期间评论列表标识不变，直接命中缓存，避免反复 O(段落 × 评论)。
-  List<(int, int, int)?> _badgesFor(ReaderSegmentScope scope) {
-    if (_badgeCache != null && identical(_badgeCacheKey, scope.comments)) {
-      return _badgeCache!;
-    }
-    final int chapter = widget.chapterIndex;
-    // 本章评论预筛一次，缩小逐段统计的常数。
-    final List<Comment> chapterComments = <Comment>[
-      for (final Comment c in scope.comments)
-        if (c.chapterIndex == chapter) c,
-    ];
-    final int n = widget.page.length;
-    final List<(int, int, int)?> result =
-        List<(int, int, int)?>.filled(n, null);
-    // 段落在本章的起始偏移；页首若是上页某段的延续，用回溯得到的真实起点。
-    int runStart = widget.leadingParagraphStart ?? widget.pageStartOffset;
-    for (int i = 0; i < n; i++) {
-      final ReaderBlock block = widget.page[i];
-      if (i == 0) {
-        runStart = block.isParagraphStart
-            ? _blockChapterStart(0)
-            : (widget.leadingParagraphStart ?? _blockChapterStart(0));
-      } else if (block.isParagraphStart) {
-        runStart = _blockChapterStart(i);
-      }
-      // 段尾：仅当本块是该段真正的结尾块（跨页拆分时只有最后一片为真）。
-      if (!block.isParagraphEnd) continue;
-      final int paraEnd = _blockChapterStart(i) + block.length;
-      int count = 0;
-      for (final Comment c in chapterComments) {
-        if (c.start >= runStart && c.start < paraEnd) count++;
-      }
-      if (count > 0) result[i] = (runStart, paraEnd, count);
-    }
-    _badgeCache = result;
-    _badgeCacheKey = scope.comments;
-    return result;
   }
 
   @override
@@ -1116,15 +1135,15 @@ class _ReaderProseState extends State<ReaderProse> {
     final double indentWidth = _indentWidth(scaler);
     final bool selectable = ReaderSelectionScope.of(context)?.enabled ?? false;
 
-    // 段评：有回调且有评论时，在每个段落尾部（该段最后一个块）显示评论数角标。
     final ReaderSegmentScope? segScope = ReaderSegmentScope.of(context);
-    final bool showBadges = segScope != null &&
-        segScope.onTap != null &&
-        segScope.comments.isNotEmpty &&
-        // 读者可在阅读菜单里一键收起角标（见 ReaderConfig.showSegmentComments）。
-        _config.showSegmentComments;
-    final List<(int, int, int)?>? badges =
-        showBadges ? _badgesFor(segScope) : null;
+    final List<Comment> chapterComments = segScope == null ||
+            segScope.comments.isEmpty ||
+            !_config.showSegmentComments
+        ? const <Comment>[]
+        : <Comment>[
+            for (final Comment comment in segScope.comments)
+              if (comment.chapterIndex == widget.chapterIndex) comment,
+          ];
 
     // 本章划线预筛一次，避免逐段重复过滤全量划线。
     final ReaderUnderlineScope? uScope = ReaderUnderlineScope.of(context);
@@ -1142,10 +1161,15 @@ class _ReaderProseState extends State<ReaderProse> {
       if (i > 0 && block.isParagraphStart) {
         children.add(SizedBox(height: _config.paragraphSpacing));
       }
-      children.add(
-        _paragraph(i, block, indentWidth, selectable, badges?[i], segScope,
-            chapterUnderlines),
-      );
+      children.add(_paragraph(
+        i,
+        block,
+        indentWidth,
+        selectable,
+        segScope,
+        chapterUnderlines,
+        chapterComments,
+      ));
     }
     final Column column = Column(
       mainAxisSize: MainAxisSize.min,
@@ -1168,20 +1192,12 @@ class _ReaderProseState extends State<ReaderProse> {
     ReaderBlock block,
     double indentWidth,
     bool selectable,
-    (int, int, int)? badge,
     ReaderSegmentScope? segScope,
     List<Underline> chapterUnderlines,
+    List<Comment> chapterComments,
   ) {
-    // 基础文字 span（段首含缩进占位）；若该段尾需要角标，追加到末尾。
-    // 角标不进入 _plainForSpan / 选区 / 划线的坐标系（它们只取正文），故不影响几何。
     final heading = widget.headingOffsets.contains(_blockChapterStart(i));
-    InlineSpan span = _spanFor(block, indentWidth, heading: heading);
-    if (badge != null && segScope != null) {
-      span = TextSpan(
-        style: _config.textStyle,
-        children: <InlineSpan>[span, _badgeSpan(segScope, badge)],
-      );
-    }
+    final InlineSpan span = _spanFor(block, indentWidth, heading: heading);
     final Widget text = Text.rich(
       span,
       textAlign: _config.textAlign,
@@ -1193,12 +1209,26 @@ class _ReaderProseState extends State<ReaderProse> {
     final TextSelection? readingSel = _readingSelFor(i);
     final List<TextSelection> underlines =
         _underlineRangesFor(i, chapterUnderlines);
+    final List<TextSelection> commentHighlights =
+        _commentRangesFor(i, chapterComments);
     final Widget keyed = KeyedSubtree(key: key, child: text);
-    final bool layered =
-        localSel != null || readingSel != null || underlines.isNotEmpty;
+    final bool layered = localSel != null ||
+        readingSel != null ||
+        commentHighlights.isNotEmpty ||
+        underlines.isNotEmpty;
     final Widget content = layered
         ? Stack(
             children: <Widget>[
+              if (commentHighlights.isNotEmpty)
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: _HighlightRangesPainter(
+                      paragraphKey: key,
+                      selections: commentHighlights,
+                      color: _config.theme.commentHighlightColor,
+                    ),
+                  ),
+                ),
               // 跟读高亮（听书当前句），置于最底层。
               if (readingSel != null)
                 Positioned.fill(
@@ -1226,7 +1256,7 @@ class _ReaderProseState extends State<ReaderProse> {
                     painter: _UnderlinePainter(
                       paragraphKey: key,
                       ranges: underlines,
-                      color: _underlineColor,
+                      color: _config.theme.underlineColor,
                     ),
                   ),
                 ),
@@ -1235,8 +1265,39 @@ class _ReaderProseState extends State<ReaderProse> {
           )
         : keyed;
 
+    final Widget interactiveContent =
+        commentHighlights.isEmpty || segScope?.onTap == null
+            ? content
+            : _CommentHighlightTapRegion(
+                paragraphKey: key,
+                selections: commentHighlights,
+                onTapOffset: (int plainOffset) {
+                  final int chapterOffset = _plainToChapter(i, plainOffset);
+                  final List<Comment> tapped = <Comment>[
+                    for (final Comment comment in chapterComments)
+                      if (comment.start <= chapterOffset &&
+                          chapterOffset < comment.end)
+                        comment,
+                  ];
+                  if (tapped.isEmpty) return;
+                  final int start = tapped
+                      .map((comment) => comment.start)
+                      .reduce((a, b) => a < b ? a : b);
+                  final int end = tapped
+                      .map((comment) => comment.end)
+                      .reduce((a, b) => a > b ? a : b);
+                  segScope!.onTap!(ReaderSegmentTap(
+                    chapterIndex: widget.chapterIndex,
+                    start: start,
+                    end: end,
+                    count: tapped.length,
+                  ));
+                },
+                child: content,
+              );
+
     // 未启用选择时仍渲染已有划线，只是不响应长按。
-    if (!selectable) return content;
+    if (!selectable) return interactiveContent;
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
@@ -1246,8 +1307,134 @@ class _ReaderProseState extends State<ReaderProse> {
         d.globalPosition,
         indentWidth,
       ),
-      child: content,
+      onLongPressMoveUpdate: (details) {
+        _draggingHandle = true;
+        final bias = _config.fontSize * _config.lineHeight * 0.4;
+        _dragHandle(false, details.globalPosition + Offset(0, bias));
+      },
+      onLongPressEnd: (_) => _endHandleDrag(),
+      child: interactiveContent,
     );
+  }
+}
+
+class _NativeSelectionHandlePainter extends CustomPainter {
+  const _NativeSelectionHandlePainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Readium/Android 原生选区手柄约 22dp：顶部窄连接点 + 下方圆形抓手。
+    // 颜色来自宿主 Theme，与 Android NormalTheme 的 colorAccent 对齐。
+    final Paint paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+    final double radius = size.width * 0.45;
+    final double centerX = size.width / 2;
+    final double centerY = size.height - radius;
+    canvas
+      ..drawRect(
+        Rect.fromLTWH(centerX - 1, 0, 2, centerY),
+        paint,
+      )
+      ..drawCircle(Offset(centerX, centerY), radius, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _NativeSelectionHandlePainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
+class _CommentHighlightTapRegion extends SingleChildRenderObjectWidget {
+  const _CommentHighlightTapRegion({
+    required this.paragraphKey,
+    required this.selections,
+    required this.onTapOffset,
+    required super.child,
+  });
+
+  final GlobalKey paragraphKey;
+  final List<TextSelection> selections;
+  final ValueChanged<int> onTapOffset;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderCommentHighlightTapRegion(
+        paragraphKey: paragraphKey,
+        selections: selections,
+        onTapOffset: onTapOffset,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderCommentHighlightTapRegion renderObject,
+  ) {
+    renderObject
+      ..paragraphKey = paragraphKey
+      ..selections = selections
+      ..onTapOffset = onTapOffset;
+  }
+}
+
+class _RenderCommentHighlightTapRegion extends RenderProxyBox {
+  _RenderCommentHighlightTapRegion({
+    required GlobalKey paragraphKey,
+    required List<TextSelection> selections,
+    required ValueChanged<int> onTapOffset,
+  })  : _paragraphKey = paragraphKey,
+        _selections = selections,
+        _onTapOffset = onTapOffset {
+    _tap.onTapUp = _handleTapUp;
+  }
+
+  final TapGestureRecognizer _tap = TapGestureRecognizer();
+  GlobalKey _paragraphKey;
+  List<TextSelection> _selections;
+  ValueChanged<int> _onTapOffset;
+
+  set paragraphKey(GlobalKey value) => _paragraphKey = value;
+  set selections(List<TextSelection> value) => _selections = value;
+  set onTapOffset(ValueChanged<int> value) => _onTapOffset = value;
+
+  int? _offsetAt(Offset globalPosition) {
+    final RenderObject? object =
+        _paragraphKey.currentContext?.findRenderObject();
+    if (object is! RenderParagraph || !object.hasSize) return null;
+    final Offset local = object.globalToLocal(globalPosition);
+    for (final TextSelection selection in _selections) {
+      for (final TextBox box in object.getBoxesForSelection(selection)) {
+        if (Rect.fromLTRB(box.left, box.top, box.right, box.bottom)
+            .inflate(2)
+            .contains(local)) {
+          return object.getPositionForOffset(local).offset;
+        }
+      }
+    }
+    return null;
+  }
+
+  @override
+  bool hitTestSelf(Offset position) => true;
+
+  @override
+  void handleEvent(PointerEvent event, HitTestEntry entry) {
+    if (event is PointerDownEvent && _offsetAt(event.position) != null) {
+      _tap.addPointer(event);
+    }
+  }
+
+  void _handleTapUp(TapUpDetails details) {
+    final int? offset = _offsetAt(details.globalPosition);
+    if (offset != null) _onTapOffset(offset);
+  }
+
+  @override
+  void dispose() {
+    _tap.dispose();
+    super.dispose();
   }
 }
 
@@ -1287,7 +1474,42 @@ class _HighlightPainter extends CustomPainter {
       old.paragraphKey != paragraphKey;
 }
 
-/// 在文字下方绘制持久「划线」波浪线。取真实渲染段落的选区盒，沿每个盒的底边画波浪。
+class _HighlightRangesPainter extends CustomPainter {
+  _HighlightRangesPainter({
+    required this.paragraphKey,
+    required this.selections,
+    required this.color,
+  });
+
+  final GlobalKey paragraphKey;
+  final List<TextSelection> selections;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final RenderObject? ro = paragraphKey.currentContext?.findRenderObject();
+    if (ro is! RenderParagraph || !ro.hasSize) return;
+    final Paint paint = Paint()..color = color;
+    for (final TextSelection selection in selections) {
+      for (final TextBox box in ro.getBoxesForSelection(selection)) {
+        final RRect rect = RRect.fromRectAndRadius(
+          Rect.fromLTRB(box.left - 1, box.top, box.right + 1, box.bottom),
+          const Radius.circular(3),
+        );
+        canvas.drawRRect(rect, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_HighlightRangesPainter old) =>
+      old.selections != selections ||
+      old.color != color ||
+      old.paragraphKey != paragraphKey;
+}
+
+/// 在文字下方绘制与 Readium 一致的持久直线。取真实渲染段落的选区盒，沿每个盒的
+/// 底边绘制，换行后的每一行分别划线。
 class _UnderlinePainter extends CustomPainter {
   _UnderlinePainter({
     required this.paragraphKey,
@@ -1307,30 +1529,13 @@ class _UnderlinePainter extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.6
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
+      ..strokeCap = StrokeCap.butt;
     for (final TextSelection r in ranges) {
       for (final TextBox b in ro.getBoxesForSelection(r)) {
-        _wave(canvas, b.left, b.right, b.bottom + 1.5, paint);
+        final double y = b.bottom + 1.5;
+        canvas.drawLine(Offset(b.left, y), Offset(b.right, y), paint);
       }
     }
-  }
-
-  /// 在 [y] 处、[left,right] 区间画一条正弦波浪线。
-  void _wave(Canvas canvas, double left, double right, double y, Paint paint) {
-    const double period = 6; // 波长
-    const double amp = 1.6; // 振幅
-    final Path path = Path()..moveTo(left, y);
-    double x = left;
-    bool up = true;
-    while (x < right) {
-      final double nx = (x + period / 2).clamp(left, right);
-      final double cx = x + period / 4;
-      path.quadraticBezierTo(cx, y + (up ? -amp : amp), nx, y);
-      x = nx;
-      up = !up;
-    }
-    canvas.drawPath(path, paint);
   }
 
   @override
@@ -1338,43 +1543,4 @@ class _UnderlinePainter extends CustomPainter {
       old.ranges != ranges ||
       old.color != color ||
       old.paragraphKey != paragraphKey;
-}
-
-/// 段尾「段评」角标的描边对话气泡（34×22，左下带小尾巴），仅描边不填充。
-class _CommentBubblePainter extends CustomPainter {
-  _CommentBubblePainter(this.color);
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final Paint paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4
-      ..strokeJoin = StrokeJoin.round
-      ..strokeCap = StrokeCap.round
-      ..color = color;
-    final Path path = Path()
-      ..moveTo(9, 1.5)
-      ..lineTo(26, 1.5)
-      ..arcToPoint(const Offset(32.5, 8),
-          radius: const Radius.circular(6.5), clockwise: true)
-      ..lineTo(32.5, 9.5)
-      ..arcToPoint(const Offset(26, 16),
-          radius: const Radius.circular(6.5), clockwise: true)
-      ..lineTo(13, 16)
-      ..lineTo(8, 21)
-      ..lineTo(10, 16)
-      ..lineTo(9, 16)
-      ..arcToPoint(const Offset(2.5, 9.5),
-          radius: const Radius.circular(6.5), clockwise: true)
-      ..lineTo(2.5, 8)
-      ..arcToPoint(const Offset(9, 1.5),
-          radius: const Radius.circular(6.5), clockwise: true)
-      ..close();
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(_CommentBubblePainter old) => old.color != color;
 }

@@ -26,6 +26,7 @@ class VerticalReader extends ReaderModeView {
 
 class _VerticalReaderState extends ReaderModeViewState<VerticalReader>
     with SingleTickerProviderStateMixin {
+  final _selectionGroup = ReaderProseSelectionGroup();
   final _scroll = ItemScrollController();
   final _scrollOffset = ScrollOffsetController();
   final _positions = ItemPositionsListener.create();
@@ -663,6 +664,7 @@ class _VerticalReaderState extends ReaderModeViewState<VerticalReader>
                           padding:
                               EdgeInsets.only(bottom: config.paragraphSpacing),
                           child: ReaderProse(
+                            selectionGroup: _selectionGroup,
                             page: _pageFor(entry),
                             config: config,
                             chapterIndex: entry.chapter,
