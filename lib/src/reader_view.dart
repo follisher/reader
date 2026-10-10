@@ -14,7 +14,9 @@ import 'repository.dart';
 import 'reader_notes.dart';
 import 'reader_comment_sheets.dart';
 import 'epub_reader_view.dart';
+import 'html_reader_view.dart';
 import 'package:flutter/foundation.dart';
+import 'widget/book_cover.dart';
 
 /// Routes local EPUB to Readium on iOS/Android and TXT to the text engine.
 /// Supply [source] or a text [controller] for legacy/custom chapter reading.
@@ -326,9 +328,23 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
             _toast('无法打开浏览器');
           }
         case engine.ReaderTextAction.share:
+          final pagination = await ref
+              .read(coverPaginationProvider(widget.book.id).future)
+              .catchError((Object _) => null);
+          if (!mounted) return;
+          final entries = await ref
+              .read(shelfEntriesProvider.future)
+              .catchError((Object _) => <ShelfEntry>[]);
+          final markers = [
+            for (final entry in entries)
+              if (entry.book.id == widget.book.id) ...entry.markers,
+          ];
           if (!mounted) return;
           await ShareCardSheet.show(
             context,
+            book: widget.book,
+            pagination: pagination,
+            markers: markers,
             bookTitle: widget.book.title,
             author: widget.book.author,
             coverPath: widget.book.coverPath,
@@ -386,6 +402,32 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
     }
   }
 
+  Future<void> _openHtml() async {
+    _controller.stopAutoTurn();
+    await _flush();
+    if (!mounted) return;
+    final b = widget.book;
+    final book = Book(
+      id: b.id,
+      title: b.title,
+      author: b.author,
+      format: b.format,
+      source: b.source,
+      fileName: b.fileName,
+      addedAt: b.addedAt,
+      coverPath: b.coverPath,
+      cacheReady: b.cacheReady,
+      location: _progress?.latest ?? b.location,
+    );
+    // Replace to prevent the hidden text reader from overwriting HTML progress.
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            HtmlReaderView(book: book, followHostTheme: widget.followHostTheme),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _disposed = true;
@@ -424,6 +466,7 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
         ),
       );
     }
+    final coverContainer = ProviderScope.containerOf(context, listen: false);
     return PopScope(
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) unawaited(_flush());
@@ -433,6 +476,10 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
           children: [
             engine.BookReader(
               source: _source,
+              catalogCoverBuilder: (_) => UncontrolledProviderScope(
+                container: coverContainer,
+                child: RepositoryBookCover(book: widget.book),
+              ),
               config: _config,
               controller: _controller,
               progressStore: _progress!,
@@ -449,6 +496,39 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
               enableTextSelection: true,
               onClose: _close,
               onTextAction: _onTextAction,
+            ),
+            AnimatedBuilder(
+              animation: _controller,
+              builder: (context, _) {
+                if (!_controller.isMenuVisible ||
+                    _controller.isMenuPanelExpanded) {
+                  return const SizedBox.shrink();
+                }
+                return Positioned(
+                  top: MediaQuery.paddingOf(context).top + 56,
+                  right: 12,
+                  child: Material(
+                    borderRadius: BorderRadius.circular(12),
+                    color: _config.theme.panelColor,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if ((widget.book.format == BookFormat.epub ||
+                                widget.book.format == BookFormat.md ||
+                                widget.book.format == BookFormat.txt) &&
+                            widget.source == null)
+                          TextButton(
+                            onPressed: _openHtml,
+                            style: TextButton.styleFrom(
+                              foregroundColor: _config.theme.textColor,
+                            ),
+                            child: const Text('图文阅读'),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
             if (_saveError != null || _notesError != null)
               Positioned(

@@ -6,6 +6,7 @@ import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:html/parser.dart' as html;
 
 import 'models.dart';
+import 'book_layout.dart';
 import 'repository.dart';
 
 /// Bridges the existing shelf to the engine. Opening loads metadata only;
@@ -34,7 +35,7 @@ class RepositoryBookSource extends engine.BookSource {
     final chapterTexts = <int, Future<TextChapter>>{};
     Future<TextChapter> textFor(int index) => chapterTexts.putIfAbsent(
       index,
-      () async => normalizeChapter(await data.readChapter(index)),
+      () async => normalizeChapter(await _originalChapter(data, index)),
     );
     Future<engine.BookTocEntry?> mapEntry(BookTocEntry entry) async {
       final chapter = entry.chapter;
@@ -46,7 +47,10 @@ class RepositoryBookSource extends engine.BookSource {
         final mapped = await mapEntry(child);
         if (mapped != null) children.add(mapped);
       }
-      final text = entry.block == null && children.isEmpty
+      final text =
+          entry.block == null &&
+              entry.canonicalCharOffset == null &&
+              children.isEmpty
           ? null
           : await textFor(chapter);
       return engine.BookTocEntry(
@@ -55,7 +59,11 @@ class RepositoryBookSource extends engine.BookSource {
         chapterIndex: chapter,
         charOffset: text == null
             ? 0
-            : text.toEngine(text.canonicalForBlock(entry.block ?? 0), 2),
+            : text.toEngine(
+                entry.canonicalCharOffset ??
+                    text.canonicalForBlock(entry.block ?? 0),
+                2,
+              ),
         children: children,
       );
     }
@@ -86,7 +94,9 @@ class RepositoryBookSource extends engine.BookSource {
     return _pending.putIfAbsent(index, () async {
       try {
         final data = await content();
-        final result = await normalizeChapter(await data.readChapter(index));
+        final result = await normalizeChapter(
+          await _originalChapter(data, index),
+        );
         _chapters[index] = result;
         while (_chapters.length > 8) {
           _chapters.remove(_chapters.keys.first);
@@ -102,6 +112,11 @@ class RepositoryBookSource extends engine.BookSource {
   Future<String> loadChapterBody(int chapterIndex) async =>
       (await textChapter(chapterIndex)).body;
 }
+
+Future<BookChapter> _originalChapter(BookContent data, int index) =>
+    data is LayoutBookContent
+    ? data.readOriginalChapter(index)
+    : data.readChapter(index);
 
 Future<TextChapter> normalizeChapter(BookChapter chapter) async {
   // HTML parsing is CPU-heavy for long chapters. Keep it off the UI isolate

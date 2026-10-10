@@ -20,7 +20,7 @@ dependencies:
 
 ## 已实现能力
 
-- 三列网格书架、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
+- 分类单行横向滚动书架、整页纵向滚动、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
 - 跨书摘录流集中展示划线和评论，支持搜索、按书筛选、排序、随机回顾、复制、删除及跳回原文。
 - 多选导入本地 UTF-8 TXT 和 EPUB 文件。
 - EPUB 元数据、spine 章节顺序、正文与内嵌位图读取；书架会显示 EPUB 声明的封面，没有封面时使用默认图标。
@@ -150,7 +150,7 @@ BookCover(
 )
 ```
 
-默认大小为 110 × 162，父级 `SizedBox` 或网格约束可以调整大小。存在封面文件时显示图片，否则使用书名和作者生成的默认封面。`onTap`、`onLongPress` 可选；书架通过 `showProgress: true` 和 `markers` 保留原有进度与便签展示。
+默认正面宽 110、高 162，整体宽度额外包含按页数计算的纸页厚度；父级 `SizedBox` 或 `FittedBox` 可以调整大小。封面统一显示线装纸签和分类印章，已有封面图片作为底纹。`onTap`、`onLongPress` 可选；书架通过 `showProgress: true` 和 `markers` 保留原有进度与便签展示。
 
 ### Dart 内置目录
 
@@ -240,7 +240,15 @@ ReaderView(book: shelfBook, source: remoteSource, controller: controller);
 
 ## Readium 宿主配置
 
-要求 Flutter >= 3.44.4。Android 宿主需要 `FlutterFragmentActivity`、minSdk >= 24，以及 `compileOptions.isCoreLibraryDesugaringEnabled = true` 和 `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")`。示例工程已配置。iOS 要求 15.0；CocoaPods 配置可参考 `example/ios/Podfile`，Readium pods 使用 3.11.x。
+要求 Flutter >= 3.44.4。Android 宿主需要 `FlutterFragmentActivity`、minSdk >= 24，以及 `compileOptions.isCoreLibraryDesugaringEnabled = true` 和 `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")`。示例工程已配置。iOS 要求 15.0；CocoaPods 配置可参考 `example/ios/Podfile`，Readium pods 使用 3.11.x。宿主 `ios/Podfile` 必须显式配置 Readium 的专用源；插件 podspec 中的 `s.source` 不会注册依赖源：
+
+```ruby
+source 'https://github.com/readium/podspecs'
+source 'https://cdn.cocoapods.org/'
+platform :ios, '15.0'
+```
+
+在宿主 `ios` 目录运行 `pod install`。已有 Readium specs 缓存需要刷新时运行 `pod install --repo-update`。
 
 `ReaderView` 会自动分流。自定义仓库还需实现 `PublicationFileRepository.publicationPath`，返回本地原始 EPUB 路径。传入文本 `source` 或 `BookReaderController` 时保留自定义文本引擎。旧的 `HtmlReaderView` 与 `useLegacyTextReader` 入口已移除。Readium 当前是单出版物会话，不能同时打开两个 EPUB 页面；适配器会阻止第二个会话覆盖第一个。
 
@@ -257,3 +265,48 @@ EPUB 支持选区复制、划线、评论、查询、分享卡片、书签、笔
 ### 阅读引擎维护
 
 `third_party/flutter_book_reader` 是 1.5.13 的项目内 MIT 许可副本，保留原始许可证。已修补连续滚动的章内位置恢复/更新、加载后可见位置保持，以及控制器释放后的异步通知。升级时请对照 `LOCAL_CHANGES.md` 合并；不要直接修改全局 pub 缓存。连续滚动支持段内选中和批注，付费内容与章节附加组件尚不在此分支的支持范围内。
+
+### Markdown 阅读
+
+本地导入支持 UTF-8 `.md`，按标题生成章节目录。默认文字阅读会去掉 Markdown 语法标记，支持现有划线、批注、书签和阅读进度保存。图文阅读可查看加粗、列表、引用、代码块和表格排版，但暂不支持划线。单个 MD 文件不附带图片资源，图片以替代文字展示。文字阅读不保留代码缩进和表格布局。划线以解析后的章节及字符范围定位，修改原文或解析规则后不保证迁移。
+
+### 内置图书目录与排版配置
+
+`CatalogBook.layoutAssetPath` 可指定与原始文件 SHA-256 对应的目录配置。宿主的 `assets/books/book_layout_manifest.json` 保存逐本梳理的原文标题、层级和行号；编译后为每本书生成 `.layout.json`，书架同步时写入本地目录。原始文件及文本阅读章节不变，已有划线、批注与阅读位置沿用原坐标。图文阅读按配置展示标题、在已有句末标点处拆分长段，并保留课式行内空间。图文位置保存时会换算回原文坐标。
+
+修改原书或目录后，先复核清单中的原文行号与标题，再运行目录编译工具：
+
+```sh
+flutter test tool/compile_book_layouts.dart \
+  --dart-define=BOOK_DRAFTS=../blindness/assets/books/book_layout_manifest.json \
+  --dart-define=BOOK_ROOT=../blindness/assets/books \
+  --dart-define=BOOK_REPORT=book_layout_report.json
+```
+
+完整语料验证：
+
+```sh
+flutter test test/book_layout_corpus_test.dart \
+  --dart-define=READER_BOOKS_DIRECTORY=../blindness/assets/books
+```
+
+目录改动只更新配置。更改原始文件会得到新的书籍 ID，旧阅读数据不会自动迁移；不要用整理副本直接覆盖原书以更新已有书架。无正文的缺卷、缺图与待校勘文字不补造。
+
+### 封面纸层与便签
+
+书架与命盘图书列表使用 `RepositoryBookCover`。`BookCover` 仍支持独立使用，传入
+`BookCoverPagination` 才显示有准确页位置的便签。分页尚未完成时只显示纸边。
+
+封面采用独立的固定版本：每行 20 个全角字、每页 24 行、段首缩进 2 字，每章第一页预留
+2 行标题。中英文按固定字格计算，不跟随阅读字号或设备变化，页码也不等于阅读器当前页码。
+原文和阅读笔记不修改；按笔记原始 UTF-16 坐标定位，标签横向锚定对应纸层，同页笔记合并。
+
+厚度按固定分页的总页数计算，每页厚度与间距各 0.1 逻辑像素；厚书按原有上限压缩厚度。
+图书占用宽度为封面宽度加纸页厚度，厚度最小 3 逻辑像素，保留原有最大上限。
+纸面保留顶部透视、渐变阴影与划线页位置；书架按分类分行，分类标题位于左上方；每行图书保持固定间距并横向滚动，整页纵向滚动。
+用最多 32 条装饰纹理模拟分页，不再逐页绘制；使用 RepaintBoundary 隔离。首次分页逐章后台计算，
+后续复用内存及 `cache/<bookId>/cover_pages.json` 缓存；缓存可重建，不需要导出。
+
+书架默认选中分类视图。底部二级导航提供分类长条图标与四方块网格图标，
+宿主通过 `layoutControlsBuilder` 使用共享分段导航。网格模式自动换行，
+仅显示最小 3 像素纸页厚度，不显示阅读便签；切换模式不改动笔记与阅读进度。

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math';
 import 'dart:ui' show ImageFilter;
 
@@ -19,9 +18,24 @@ enum _ShelfSection { shelf, excerpts }
 
 enum _ExcerptSort { newest, oldest, random }
 
-class BookshelfView extends ConsumerStatefulWidget {
-  const BookshelfView({super.key, required this.onBookTap, this.onReaderOpen});
+enum BookshelfLayout { grid, categories }
 
+typedef BookshelfLayoutControlsBuilder =
+    Widget Function(
+      BuildContext context,
+      BookshelfLayout layout,
+      ValueChanged<BookshelfLayout> onChanged,
+    );
+
+class BookshelfView extends ConsumerStatefulWidget {
+  const BookshelfView({
+    super.key,
+    required this.onBookTap,
+    this.onReaderOpen,
+    this.layoutControlsBuilder,
+  });
+
+  final BookshelfLayoutControlsBuilder? layoutControlsBuilder;
   final ValueChanged<Book> onBookTap;
   final ValueChanged<ReaderOpenRequest>? onReaderOpen;
 
@@ -39,6 +53,12 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   String? _selectedTag;
   String? _selectedBookId;
   _ShelfSection _section = _ShelfSection.shelf;
+  BookshelfLayout _layout = BookshelfLayout.categories;
+  bool get _showLayoutControls =>
+      _section == _ShelfSection.shelf && !_searching && _selectedTag == null;
+  double get _shelfBottomPadding => 104 + (_showLayoutControls ? 48 : 0);
+  void _selectLayout(BookshelfLayout layout) =>
+      setState(() => _layout = layout);
   _ExcerptSort _excerptSort = _ExcerptSort.newest;
   Future<List<ExcerptItem>>? _excerpts;
   StreamSubscription<List<ExcerptItem>>? _excerptSubscription;
@@ -84,11 +104,12 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       final files = await openFiles(
         acceptedTypeGroups: [
           const XTypeGroup(
-            label: 'TXT / EPUB',
-            extensions: ['txt', 'epub'],
+            label: 'TXT / EPUB / Markdown',
+            extensions: ['txt', 'epub', 'md'],
             uniformTypeIdentifiers: [
               'public.plain-text',
               'org.idpf.epub-container',
+              'public.text',
             ],
           ),
         ],
@@ -97,8 +118,10 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       for (final file in files) {
         try {
           final name = file.name.toLowerCase();
-          if (!name.endsWith('.txt') && !name.endsWith('.epub')) {
-            throw const FormatException('请选择 UTF-8 TXT 或 EPUB 文件');
+          if (!name.endsWith('.txt') &&
+              !name.endsWith('.epub') &&
+              !file.name.toLowerCase().endsWith('.md')) {
+            throw const FormatException('请选择 UTF-8 TXT, Markdown（MD）或 EPUB 文件');
           }
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
@@ -364,20 +387,38 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
             ? ReaderPalette.nightBackground
             : ReaderPalette.libraryBackground,
         body: SafeArea(
+          bottom: false,
           child: _section == _ShelfSection.shelf
               ? _buildShelf()
               : _buildExcerptFeed(),
         ),
         floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-        floatingActionButton: _ShelfExcerptSwitcher(
-          section: _section,
-          onChanged: _selectSection,
-          searching: _searching,
-          controller: _searchController,
-          focusNode: _searchFocus,
-          onSearch: _openSearch,
-          onCancel: _cancelSearch,
-          onQueryChanged: _search,
+        floatingActionButton: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_showLayoutControls) ...[
+              widget.layoutControlsBuilder?.call(
+                    context,
+                    _layout,
+                    _selectLayout,
+                  ) ??
+                  _BookshelfLayoutControls(
+                    layout: _layout,
+                    onChanged: _selectLayout,
+                  ),
+              const SizedBox(height: 10),
+            ],
+            _ShelfExcerptSwitcher(
+              section: _section,
+              onChanged: _selectSection,
+              searching: _searching,
+              controller: _searchController,
+              focusNode: _searchFocus,
+              onSearch: _openSearch,
+              onCancel: _cancelSearch,
+              onQueryChanged: _search,
+            ),
+          ],
         ),
       ),
     );
@@ -435,7 +476,10 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                   onImport: _import,
                 );
               }
-              return _buildGrid(visible);
+              return _selectedTag == null &&
+                      _layout == BookshelfLayout.categories
+                  ? _buildCategoryShelf(visible)
+                  : _buildCompactShelf(visible);
             },
           ),
         ),
@@ -443,37 +487,120 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     );
   }
 
-  Widget _buildGrid(List<ShelfEntry> entries) => ScrollConfiguration(
+  Widget _buildCompactShelf(List<ShelfEntry> entries) => ScrollConfiguration(
     behavior: const _NoOverscrollBehavior(),
-    child: ListView.builder(
-      key: const PageStorageKey('shelf-grid'),
-      padding: const EdgeInsets.fromLTRB(0, 4, 0, 104),
+    child: GridView.builder(
+      key: const PageStorageKey('shelf-compact-grid'),
+      padding: EdgeInsets.fromLTRB(20, 4, 20, _shelfBottomPadding),
       physics: const ClampingScrollPhysics(),
-      itemCount: (entries.length / 3).ceil(),
-      itemBuilder: (context, rowIndex) {
-        final start = rowIndex * 3;
-        return _ShelfRow(
-          children: [
-            for (var column = 0; column < 3; column++)
-              if (start + column < entries.length)
-                BookCover(
-                  key: ValueKey(entries[start + column].book.id),
-                  book: entries[start + column].book,
-                  showProgress: true,
-                  markers: entries[start + column].markers,
-                  onTap: () => widget.onBookTap(entries[start + column].book),
-                  onLongPress: () async {
-                    final book = entries[start + column].book;
-                    if (await _confirmRemove(book)) await _remove(book);
-                  },
-                )
-              else
-                const SizedBox.shrink(),
-          ],
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 14,
+        childAspectRatio: 113 / 162,
+      ),
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        return FittedBox(
+          key: ValueKey('bookshelf-grid-cell-${entry.book.id}'),
+          alignment: Alignment.topCenter,
+          fit: BoxFit.contain,
+          child: RepositoryBookCover(
+            key: ValueKey(entry.book.id),
+            book: entry.book,
+            minimalThickness: true,
+            markers: const [],
+            showProgress: true,
+            onTap: () => widget.onBookTap(entry.book),
+            onLongPress: () async {
+              if (await _confirmRemove(entry.book)) {
+                await _remove(entry.book);
+              }
+            },
+          ),
         );
       },
     ),
   );
+
+  Widget _buildCategoryShelf(List<ShelfEntry> entries) {
+    final groups = <String, List<ShelfEntry>>{};
+    for (final entry in entries) {
+      final categories = entry.book.tags.isEmpty
+          ? {'未分类'}
+          : entry.book.tags.map((tag) => tag.name).toSet();
+      for (final category in categories) {
+        if (_selectedTag != null && category != _selectedTag) continue;
+        groups.putIfAbsent(category, () => []).add(entry);
+      }
+    }
+    final categories = groups.keys.toList()..sort();
+    return ScrollConfiguration(
+      behavior: const _NoOverscrollBehavior(),
+      child: ListView.builder(
+        key: const PageStorageKey('shelf-grid'),
+        padding: EdgeInsets.only(top: 4, bottom: _shelfBottomPadding),
+        physics: const ClampingScrollPhysics(),
+        itemCount: categories.length,
+        itemBuilder: (context, index) {
+          final category = categories[index];
+          final books = groups[category]!;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Semantics(
+                    header: true,
+                    child: Text(
+                      category,
+                      key: ValueKey('bookshelf-category-title-$category'),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 162,
+                  child: SingleChildScrollView(
+                    key: PageStorageKey('bookshelf-category-$category'),
+                    scrollDirection: Axis.horizontal,
+                    physics: const ClampingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      children: [
+                        for (var i = 0; i < books.length; i++) ...[
+                          if (i > 0) const SizedBox(width: 12),
+                          RepositoryBookCover(
+                            key: ValueKey(books[i].book.id),
+                            book: books[i].book,
+                            showProgress: true,
+                            markers: books[i].markers,
+                            onTap: () => widget.onBookTap(books[i].book),
+                            onLongPress: () async {
+                              if (await _confirmRemove(books[i].book)) {
+                                await _remove(books[i].book);
+                              }
+                            },
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
 
   Widget _buildExcerptFeed() {
     return Column(
@@ -647,29 +774,6 @@ class _NoOverscrollBehavior extends MaterialScrollBehavior {
   ) => child;
 }
 
-class _ShelfRow extends StatelessWidget {
-  const _ShelfRow({required this.children});
-
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
-    child: SizedBox(
-      height: 162,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < children.length; i++) ...[
-            Expanded(child: children[i]),
-            if (i != children.length - 1) const SizedBox(width: 12),
-          ],
-        ],
-      ),
-    ),
-  );
-}
-
 class _ExcerptCard extends StatelessWidget {
   const _ExcerptCard({
     required this.item,
@@ -692,9 +796,6 @@ class _ExcerptCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final item = this.item;
-    final cover = item.book.coverPath == null
-        ? null
-        : File(item.book.coverPath!);
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final dark = theme.brightness == Brightness.dark;
@@ -791,19 +892,15 @@ class _ExcerptCard extends StatelessWidget {
                   padding: const EdgeInsets.only(left: 2),
                   child: Row(
                     children: [
-                      if (cover != null && cover.existsSync()) ...[
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: Image.file(
-                            cover,
-                            width: 28,
-                            height: 38,
-                            fit: BoxFit.cover,
-                            filterQuality: FilterQuality.high,
-                          ),
+                      SizedBox(
+                        width: 28,
+                        height: 38,
+                        child: FittedBox(
+                          alignment: Alignment.topLeft,
+                          child: RepositoryBookCover(book: item.book),
                         ),
-                        const SizedBox(width: 9),
-                      ],
+                      ),
+                      const SizedBox(width: 9),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1191,6 +1288,70 @@ class _ExcerptSelect<T> extends StatelessWidget {
   }
 }
 
+class _BookshelfLayoutControls extends StatelessWidget {
+  const _BookshelfLayoutControls({
+    required this.layout,
+    required this.onChanged,
+  });
+  final BookshelfLayout layout;
+  final ValueChanged<BookshelfLayout> onChanged;
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return DecoratedBox(
+      key: const ValueKey('bookshelf-layout-controls'),
+      decoration: BoxDecoration(
+        color: dark
+            ? const Color(0xFF262626)
+            : Colors.white.withValues(alpha: .88),
+        border: Border.all(color: Colors.black, width: 1.5),
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 10)],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(3),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final value in BookshelfLayout.values.reversed)
+              Tooltip(
+                message: value == BookshelfLayout.grid ? '网格视图' : '分类视图',
+                child: Semantics(
+                  button: true,
+                  selected: layout == value,
+                  child: Material(
+                    color: layout == value ? Colors.black : Colors.transparent,
+                    borderRadius: BorderRadius.circular(7),
+                    child: InkWell(
+                      key: ValueKey('bookshelf-layout-${value.name}'),
+                      borderRadius: BorderRadius.circular(7),
+                      onTap: () => onChanged(value),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        child: Icon(
+                          value == BookshelfLayout.grid
+                              ? Icons.grid_view_rounded
+                              : Icons.view_stream_rounded,
+                          size: 20,
+                          color: layout == value
+                              ? Colors.white
+                              : Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ShelfExcerptSwitcher extends StatelessWidget {
   const _ShelfExcerptSwitcher({
     required this.section,
@@ -1299,7 +1460,7 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
                   filled: true,
                   isDense: true,
                   constraints: const BoxConstraints.tightFor(height: 34),
-                  contentPadding: const EdgeInsets.only(top:8),
+                  contentPadding: const EdgeInsets.only(top: 8),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
                     borderSide: BorderSide.none,
@@ -1455,7 +1616,7 @@ class _ShelfEmpty extends StatelessWidget {
           ),
           if (allEmpty) ...[
             const SizedBox(height: 12),
-            const Text('支持导入 UTF-8 TXT / EPUB，导入后可离线阅读'),
+            const Text('支持导入 UTF-8 TXT / EPUB 和 Markdown，导入后可离线阅读'),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: busy ? null : onImport,

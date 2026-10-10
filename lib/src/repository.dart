@@ -9,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import 'models.dart';
+import 'cover_pagination.dart';
+import 'book_layout.dart';
 import 'parser.dart';
 
 enum ReaderNoteKind { bookmark, underline, comment }
@@ -130,7 +132,9 @@ class LocalBookshelfRepository
     implements
         BookshelfRepository,
         BookshelfInsightsRepository,
-        PublicationFileRepository {
+        PublicationFileRepository,
+        BookLayoutRepository,
+        BookCoverPaginationRepository {
   @override
   Future<String> publicationPath(Book book) async =>
       p.join(directory.path, book.fileName);
@@ -150,6 +154,70 @@ class LocalBookshelfRepository
   final _changes = StreamController<void>.broadcast();
   final _memoryCache = <String, BookContent>{};
   Future<void> _queue = Future.value();
+
+  final _coverPagination = <String, Future<BookCoverPagination>>{};
+  Future<void> _coverQueue = Future.value();
+
+  @override
+  Future<BookCoverPagination> loadCoverPagination(String bookId) =>
+      _coverPagination.putIfAbsent(bookId, () {
+        final result = _coverQueue.then((_) async {
+          final rows = await _db.query(
+            'books',
+            where: 'id = ? AND is_hidden = 0',
+            whereArgs: [bookId],
+          );
+          if (rows.isEmpty) throw const FormatException('图书已移除');
+          final book = _book(rows.single);
+          final content = await openBook(book);
+          final file = File(
+            p.join(directory.path, 'cache', bookId, 'cover_pages.json'),
+          );
+          if (await file.exists()) {
+            try {
+              final data =
+                  jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+              if (data['version'] == 1 &&
+                  data['parserRevision'] == parserRevision) {
+                return BookCoverPagination.fromJson(data);
+              }
+            } catch (_) {
+              /* Rebuild a partial or obsolete cache. */
+            }
+          }
+          final pages = <List<int>>[];
+          for (var i = 0; i < content.chapters.length; i++) {
+            final chapter = content is LayoutBookContent
+                ? await content.readOriginalChapter(i)
+                : await content.readChapter(i);
+            pages.add(
+              Platform.environment['FLUTTER_TEST'] == 'true'
+                  ? paginateCoverChapter(chapter)
+                  : await compute(paginateCoverChapter, chapter),
+            );
+          }
+          final pagination = BookCoverPagination(pages);
+          try {
+            await file.parent.create(recursive: true);
+            await file.writeAsString(
+              jsonEncode({
+                ...pagination.toJson(),
+                'parserRevision': parserRevision,
+              }),
+            );
+          } catch (_) {
+            /* The in-memory result remains usable without disk caching. */
+          }
+          return pagination;
+        });
+        _coverQueue = result.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {
+            _coverPagination.remove(bookId);
+          },
+        );
+        return result;
+      });
 
   static Future<LocalBookshelfRepository> create({
     Directory? directory,
@@ -589,7 +657,6 @@ class LocalBookshelfRepository
             final bookId = row['book_id'] as String;
             counts[bookId] = (counts[bookId] ?? 0) + 1;
             final list = markers.putIfAbsent(bookId, () => []);
-            if (list.length >= 4) continue;
             try {
               list.add(
                 ShelfNoteMarker(
@@ -756,8 +823,8 @@ class LocalBookshelfRepository
       throw const FormatException('图书超过 50 MB 导入上限');
     }
     final extension = p.extension(fileName).toLowerCase();
-    if (extension != '.txt' && extension != '.epub') {
-      throw const FormatException('请选择 EPUB 或 TXT 文件');
+    if (extension != '.txt' && extension != '.epub' && extension != '.md') {
+      throw const FormatException('请选择 EPUB、TXT 或 Markdown（MD）文件');
     }
     final id = sha256.convert(bytes).toString();
     final existing = await _db.query('books', where: 'id = ?', whereArgs: [id]);
@@ -829,10 +896,12 @@ class LocalBookshelfRepository
   Future<BookContent> openBook(Book book) async {
     final inMemory = _memoryCache[book.id];
     bool correctTitle(BookContent content) =>
-        book.format != BookFormat.txt ||
+        book.format == BookFormat.epub ||
         content.title == _decodeStoredTitle(book.title);
-    if (inMemory != null && correctTitle(inMemory)) return inMemory;
-    final cached = await _readCache(book.id);
+    if (inMemory != null && correctTitle(inMemory)) {
+      return _withLayout(book, inMemory);
+    }
+    final cached = await _readCache(book.id, book: book);
     if (cached != null && correctTitle(cached)) {
       _memoryCache[book.id] = cached;
       if (!book.cacheReady) {
@@ -844,17 +913,17 @@ class LocalBookshelfRepository
         );
         _changes.add(null);
       }
-      return cached;
+      return _withLayout(book, cached);
     }
     final file = File(p.join(directory.path, book.fileName));
     if (!await file.exists()) {
       throw const FormatException('本地图书文件不存在，请移除后重新导入');
     }
-    // Managed filenames are content hashes. TXT derives its title (and unnamed
-    // chapter titles) from the filename, so rebuild using the bookshelf title.
-    final parsingName = book.format == BookFormat.txt
-        ? '${Uri.encodeComponent(_decodeStoredTitle(book.title))}.txt'
-        : book.fileName;
+    // Managed filenames are content hashes. Preserve TXT/MD fallback titles
+    // from shelf metadata, encoding separators before the parser takes basename.
+    final parsingName = book.format == BookFormat.epub
+        ? book.fileName
+        : '${Uri.encodeComponent(_decodeStoredTitle(book.title))}${p.extension(book.fileName)}';
     final content = await _parse(await file.readAsBytes(), parsingName);
     if (await _writeCache(book.id, content)) {
       await _db.update(
@@ -865,10 +934,39 @@ class LocalBookshelfRepository
       );
       _changes.add(null);
     }
-    final rebuilt = await _readCache(book.id);
+    final rebuilt = await _readCache(book.id, book: book);
     final result = rebuilt != null && correctTitle(rebuilt) ? rebuilt : content;
     _memoryCache[book.id] = result;
-    return result;
+    return _withLayout(book, result);
+  }
+
+  @override
+  Future<void> saveBookLayout(String bookId, BookLayout layout) =>
+      _serial(() async {
+        if (layout.sourceHash != bookId ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(bookId)) {
+          throw const FormatException('目录与图书内容不匹配');
+        }
+        final file = File(p.join(directory.path, 'layouts', '$bookId.json'));
+        await file.parent.create(recursive: true);
+        final json = jsonEncode(layout.toJson());
+        if (await file.exists() && await file.readAsString() == json) return;
+        final temporary = File('${file.path}.tmp');
+        await temporary.writeAsString(json, flush: true);
+        await temporary.rename(file.path);
+      });
+
+  Future<BookContent> _withLayout(Book book, BookContent content) async {
+    final file = File(p.join(directory.path, 'layouts', '${book.id}.json'));
+    if (!await file.exists()) return content;
+    final layout = BookLayout.fromJson(
+      jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+    );
+    if (layout.sourceHash != book.id ||
+        layout.headings.any((h) => h.chapter >= content.chapters.length)) {
+      throw const FormatException('图书目录与缓存不匹配');
+    }
+    return LayoutBookContent(content, layout);
   }
 
   @override
@@ -924,6 +1022,7 @@ class LocalBookshelfRepository
     // The transaction above is the success boundary. Everything below is
     // cache invalidation or best-effort cleanup and cannot reverse the write.
     _memoryCache.remove(bookId);
+    _coverPagination.remove(bookId);
     _notifyChanges();
     try {
       final file = File(p.join(directory.path, row['file_name'] as String));
@@ -1129,7 +1228,7 @@ class LocalBookshelfRepository
     }
   }
 
-  Future<BookContent?> _readCache(String id) async {
+  Future<BookContent?> _readCache(String id, {Book? book}) async {
     final cache = Directory(p.join(directory.path, 'cache', id));
     final manifest = File(p.join(cache.path, 'content.json'));
     try {
@@ -1139,6 +1238,42 @@ class LocalBookshelfRepository
           data['version'] != cacheFormatVersion ||
           data['parserRevision'] != parserRevision) {
         return null;
+      }
+      if (book != null && book.format != BookFormat.epub) {
+        final storedTitle = p.basenameWithoutExtension(book.fileName);
+        // Repair only reader-generated hash titles, leaving genuine headings,
+        // body text and note offsets untouched.
+        if (RegExp(r'^[0-9a-f]{64}$').hasMatch(storedTitle) &&
+            book.title != storedTitle) {
+          var changed = false;
+          final generatedTitle = RegExp(
+            '^${RegExp.escape(storedTitle)}( · [0-9]+)?\$',
+          );
+          void repair(dynamic value) {
+            if (value is Map<String, dynamic>) {
+              final title = value['title'];
+              if (title is String && generatedTitle.hasMatch(title)) {
+                value['title'] =
+                    '${book.title}${title.substring(storedTitle.length)}';
+                changed = true;
+              }
+              for (final child in value.values) {
+                repair(child);
+              }
+            } else if (value is List) {
+              for (final child in value) {
+                repair(child);
+              }
+            }
+          }
+
+          repair(data);
+          if (changed) {
+            final temporary = File('${manifest.path}.tmp');
+            await temporary.writeAsString(jsonEncode(data), flush: true);
+            await temporary.rename(manifest.path);
+          }
+        }
       }
       // A partial cache must be rebuilt from the original file.
       for (var i = 0; i < (data['chapters'] as List).length; i++) {
@@ -1180,11 +1315,13 @@ class LocalBookshelfRepository
         'title': entry.title,
         'chapter': entry.chapter,
         'block': entry.block,
+        'canonicalCharOffset': entry.canonicalCharOffset,
         'children': _tocToJson(entry.children),
       },
   ];
 
   Future<void> close() async {
+    await _coverQueue;
     await _queue;
     await _changes.close();
     await _db.close();
@@ -1275,6 +1412,7 @@ class _CachedBookContent implements OnDemandBookContent {
           title: entry['title'] as String,
           chapter: entry['chapter'] as int?,
           block: entry['block'] as int?,
+          canonicalCharOffset: entry['canonicalCharOffset'] as int?,
           children: _tocFromJson(
             entry['children'] as List<dynamic>? ?? const [],
           ),

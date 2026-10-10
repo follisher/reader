@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -6,6 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:share_plus/share_plus.dart';
+
+import '../models.dart';
+import '../cover_pagination.dart';
+import '../repository.dart';
+import 'book_cover.dart';
 
 class ShareCardSheet extends StatefulWidget {
   const ShareCardSheet({
@@ -18,8 +22,14 @@ class ShareCardSheet extends StatefulWidget {
     required this.readerTheme,
     required this.textStyle,
     required this.dateText,
+    this.book,
+    this.pagination,
+    this.markers = const [],
   });
 
+  final Book? book;
+  final BookCoverPagination? pagination;
+  final List<ShelfNoteMarker> markers;
   final String bookTitle;
   final String author;
   final String? coverPath;
@@ -38,6 +48,9 @@ class ShareCardSheet extends StatefulWidget {
     required String quote,
     required engine.ReaderTheme readerTheme,
     required TextStyle textStyle,
+    Book? book,
+    BookCoverPagination? pagination,
+    List<ShelfNoteMarker> markers = const [],
   }) {
     final now = DateTime.now();
     String two(int value) => value.toString().padLeft(2, '0');
@@ -46,6 +59,9 @@ class ShareCardSheet extends StatefulWidget {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => ShareCardSheet(
+        book: book,
+        pagination: pagination,
+        markers: markers,
         bookTitle: bookTitle,
         author: author,
         coverPath: coverPath,
@@ -221,43 +237,29 @@ class _ShareCardSheetState extends State<ShareCardSheet> {
     ],
   );
 
-  Widget _cover() {
-    final path = widget.coverPath;
-    final fallback = ColoredBox(
-      color: _theme.accentColor,
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Text(
-            widget.bookTitle,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: widget.textStyle.copyWith(
-              color: Colors.white,
-              fontSize: 10,
-              height: 1.3,
-              fontWeight: FontWeight.w600,
+  Widget _cover() => SizedBox(
+    width: 52,
+    height: 72,
+    child: FittedBox(
+      alignment: Alignment.topLeft,
+      child: BookCover(
+        book:
+            widget.book ??
+            Book(
+              id: widget.bookTitle,
+              title: widget.bookTitle,
+              author: widget.author,
+              coverPath: widget.coverPath,
+              format: BookFormat.txt,
+              source: BookSource.imported,
+              fileName: '',
+              addedAt: DateTime(1970),
             ),
-          ),
-        ),
+        pagination: widget.pagination,
+        markers: widget.markers,
       ),
-    );
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: SizedBox(
-        width: 52,
-        height: 72,
-        child: path == null || path.isEmpty
-            ? fallback
-            : Image.file(
-                File(path),
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => fallback,
-              ),
-      ),
-    );
-  }
+    ),
+  );
 
   Widget _quote() => Stack(
     clipBehavior: Clip.none,
