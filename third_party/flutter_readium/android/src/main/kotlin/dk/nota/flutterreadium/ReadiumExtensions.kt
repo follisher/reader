@@ -41,6 +41,7 @@ import org.readium.r2.shared.util.resource.filename
 import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
 import java.util.Locale
+import kotlin.time.ExperimentalTime
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.DurationUnit
@@ -515,7 +516,7 @@ suspend fun Publication.getGuidedNavigationMediaOverlays(): List<FlutterMediaOve
  * If there are no media overlays, returns the original publication and null.
  * Guided navigation is preferred over syncnarr media overlays when both are present.
  */
-@OptIn(InternalReadiumApi::class)
+@OptIn(InternalReadiumApi::class, ExperimentalTime::class)
 suspend fun Publication.makeSyncAudiobook(): Pair<Publication, List<FlutterMediaOverlay?>?> {
     if (!hasSyncNarration()) {
         return Pair(this, null)
