@@ -125,7 +125,18 @@ data class FlutterEpubPreferences(
             toCustomCssVariables().filter { it.value != null }
                 .map { (key, value) -> "$key: $value !important" }
                 .joinToString(separator = ";")
-        }}</style>""".trimIndent()
+        }}</style><style id="flutter_readium_selection_style">${selectionStyleSheet()}</style>""".trimIndent()
+
+    // ReaderTheme.night: WebView's CSS selection is independent of Android's
+    // textColorHighlight (which only reliably themes native text controls).
+    // Restrict this override to the reader's night paper; other themes retain
+    // their existing selection styling.
+    fun selectionStyleSheet(): String =
+        if (backgroundColor?.lowercase() in setOf("#121212", "#ff121212")) {
+            "::selection { background-color: #4A4A4A !important; color: #E0E0E0 !important; }"
+        } else {
+            ""
+        }
 
     companion object {
         fun fromMap(map: Map<String, Any>): FlutterEpubPreferences {

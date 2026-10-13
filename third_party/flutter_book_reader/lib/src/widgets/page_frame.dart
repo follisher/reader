@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -1508,8 +1510,11 @@ class _HighlightRangesPainter extends CustomPainter {
       old.paragraphKey != paragraphKey;
 }
 
-/// 在文字下方绘制与 Readium 一致的持久直线。取真实渲染段落的选区盒，沿每个盒的
-/// 底边绘制，换行后的每一行分别划线。
+/// 在文字下方绘制与 Readium 一致的持久直线。
+///
+/// 选区盒会按字体回退拆分。中文和数字混排时，各字体的盒底可能不同；若直接沿每个
+/// 盒的底边绘制，划线会在同一行内参差不齐。因此先从整个段落取得每一行的共同底边，
+/// 再让选区中的所有片段对齐到对应行。
 class _UnderlinePainter extends CustomPainter {
   _UnderlinePainter({
     required this.paragraphKey,
@@ -1530,12 +1535,55 @@ class _UnderlinePainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.6
       ..strokeCap = StrokeCap.butt;
+    final String text = ro.text.toPlainText();
+    final List<_TextLineBounds> lines = _textLineBounds(
+      ro.getBoxesForSelection(
+        TextSelection(baseOffset: 0, extentOffset: text.length),
+      ),
+    );
     for (final TextSelection r in ranges) {
       for (final TextBox b in ro.getBoxesForSelection(r)) {
-        final double y = b.bottom + 1.5;
+        final double y = _bottomForBox(b, lines) + 1.5;
         canvas.drawLine(Offset(b.left, y), Offset(b.right, y), paint);
       }
     }
+  }
+
+  List<_TextLineBounds> _textLineBounds(List<TextBox> boxes) {
+    final List<TextBox> ordered = List<TextBox>.of(boxes)
+      ..sort((a, b) => a.top.compareTo(b.top));
+    final List<_TextLineBounds> lines = <_TextLineBounds>[];
+    for (final TextBox box in ordered) {
+      final double center = (box.top + box.bottom) / 2;
+      _TextLineBounds? line;
+      for (final _TextLineBounds candidate in lines) {
+        if (candidate.containsVertically(center)) {
+          line = candidate;
+          break;
+        }
+      }
+      if (line == null) {
+        lines.add(_TextLineBounds.fromBox(box));
+      } else {
+        line.include(box);
+      }
+    }
+    return lines;
+  }
+
+  double _bottomForBox(TextBox box, List<_TextLineBounds> lines) {
+    if (lines.isEmpty) return box.bottom;
+    final double center = (box.top + box.bottom) / 2;
+    _TextLineBounds closest = lines.first;
+    double distance = (closest.center - center).abs();
+    for (final _TextLineBounds line in lines.skip(1)) {
+      final double nextDistance = (line.center - center).abs();
+      if (nextDistance < distance) {
+        closest = line;
+        distance = nextDistance;
+      }
+    }
+    return closest.bottom;
   }
 
   @override
@@ -1543,4 +1591,23 @@ class _UnderlinePainter extends CustomPainter {
       old.ranges != ranges ||
       old.color != color ||
       old.paragraphKey != paragraphKey;
+}
+
+class _TextLineBounds {
+  _TextLineBounds({required this.top, required this.bottom});
+
+  factory _TextLineBounds.fromBox(TextBox box) =>
+      _TextLineBounds(top: box.top, bottom: box.bottom);
+
+  double top;
+  double bottom;
+
+  double get center => (top + bottom) / 2;
+
+  bool containsVertically(double value) => top <= value && value <= bottom;
+
+  void include(TextBox box) {
+    top = math.min(top, box.top);
+    bottom = math.max(bottom, box.bottom);
+  }
 }

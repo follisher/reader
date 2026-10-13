@@ -67,6 +67,83 @@ Future<void> frames(WidgetTester tester, [int count = 12]) async {
 }
 
 void main() {
+  testWidgets('short volume page after preface stays at the selected chapter', (
+    tester,
+  ) async {
+    final content = MemoryBookContent(
+      title: '第一序列',
+      author: '',
+      chapters: [
+        BookChapter(
+          id: 'OPS/0.xhtml',
+          title: '目录',
+          blocks: [for (var i = 0; i < 400; i++) '<p>目录条目 $i</p>'],
+        ),
+        BookChapter(
+          id: 'OPS/1.xhtml',
+          title: '序',
+          blocks: [
+            '<h2>序</h2>',
+            for (var i = 0; i < 12; i++) '<p>序言段落 $i。${'阅读正文。' * 6}</p>',
+          ],
+        ),
+        const BookChapter(
+          id: 'OPS/2.xhtml',
+          title: '第一卷 世界的真相',
+          blocks: ['<h2>第一卷 世界的真相</h2>'],
+        ),
+        const BookChapter(
+          id: 'OPS/3.xhtml',
+          title: '第1章、脑子有病',
+          blocks: ['<h2>第1章、脑子有病</h2>', '<p>正文开始</p>'],
+        ),
+      ],
+    );
+    final pub = publication(4);
+    final config = engine.ReaderConfig();
+    final key = GlobalKey<EpubContinuousViewState>();
+    final positions = <rd.Locator>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: EpubContinuousView(
+            key: key,
+            content: Future<BookContent>.value(content),
+            publication: pub,
+            config: config,
+            initialLocator: pub.locatorFromLink(pub.readingOrder[1]),
+            onPosition: positions.add,
+            onSelection: (_) {},
+            onTap: () {},
+            onError: (_) {},
+          ),
+        ),
+      ),
+    );
+    await frames(tester);
+    expect(positions.last.href, '1.xhtml');
+    await key.currentState!.goTo(pub.locatorFromLink(pub.readingOrder[2]));
+    await frames(tester);
+    expect(positions.last.href, '2.xhtml');
+    expect(find.text('第一卷 世界的真相', findRichText: true), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
+    config.dispose();
+  });
+
+  test('reading-order index accepts EPUB-root-prefixed locators', () {
+    final pub = publication(3);
+    final locator = rd.Locator.fromJson({
+      'href': 'OPS/1.xhtml#section',
+      'type': 'application/xhtml+xml',
+      'locations': {'progression': 0},
+    });
+    expect(EpubContinuousDocument.readingOrderIndex(pub, locator), 1);
+    expect(
+      EpubContinuousDocument(LazyEpub(count: 3), pub).chapterFor(locator),
+      1,
+    );
+  });
+
   test(
     'repeated words and inline nodes preserve the correct selection offsets',
     () async {

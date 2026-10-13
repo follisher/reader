@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/material.dart' as mq show Orientation;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' as mq show Orientation;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -141,8 +143,7 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   ReadiumReaderChannel? _channel;
   EPUBPreferences? _latestEPUBPreferences;
   PDFPreferences? _latestPDFPreferences;
-  final Map<String, List<ReaderDecoration>> _latestDecorationGroups =
-      <String, List<ReaderDecoration>>{};
+  final Map<String, List<ReaderDecoration>> _latestDecorationGroups = <String, List<ReaderDecoration>>{};
   bool wasDestroyed = false;
   bool isReady = false;
 
@@ -185,11 +186,14 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   }
 
   Future<void> _updateSelectionHandleColor() async {
+    // Android receives the tint through creationParams on the keyed surface.
+    if (Platform.isAndroid) return;
     final channel = _channel;
     if (channel == null) return;
     try {
       await channel.invokeMethod<void>(
-        'setSelectionHandleColor', widget.selectionHandleColor?.toARGB32(),
+        'setSelectionHandleColor',
+        widget.selectionHandleColor?.toARGB32(),
       );
     } on Object catch (error) {
       _log.w('Could not update selection handle tint: $error');
@@ -279,7 +283,6 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
                   _toggleControls();
                 }
               }
-
             },
 
             child: _readerWidget,
@@ -374,10 +377,18 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
 
     if (Platform.isAndroid) {
       return PlatformViewLink(
+        // Chromium caches handle resources at WebView creation. Recreate the
+        // platform surface on theme changes; _replayNativeState restores notes.
+        key: ValueKey(selectionHandleColor),
         viewType: _viewType,
         surfaceFactory: (final context, final controller) => AndroidViewSurface(
           controller: controller as AndroidViewController,
-          gestureRecognizers: const {},
+          // The native pager and WebView must receive the complete pointer
+          // sequence. Waiting for Flutter's gesture arena can delay/reject the
+          // up event, making a dragged page spring back, and breaks selection.
+          gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+            Factory<EagerGestureRecognizer>(EagerGestureRecognizer.new),
+          },
           hitTestBehavior: PlatformViewHitTestBehavior.opaque,
         ),
         onCreatePlatformView: (final params) =>

@@ -14,15 +14,15 @@ const demoCatalog = BookCatalog(
   books: [
     CatalogBook(
       assetPath: 'assets/books/紫微斗數全書卷一.txt',
-      tags: [AppBookTags.classic, AppBookTags.fortune, AppBookTags.ancient],
+      tags: [AppBookTags.classic],
     ),
     CatalogBook(
-      assetPath: 'assets/books/紫微斗數全書卷二.txt',
-      tags: [AppBookTags.classic, AppBookTags.fortune, AppBookTags.ancient],
+      assetPath: 'assets/books/奇门遁甲元灵经.md',
+      tags: [AppBookTags.fortune],
     ),
     CatalogBook(
       assetPath: 'assets/books/紫微斗數全書卷三.txt',
-      tags: [AppBookTags.classic, AppBookTags.fortune, AppBookTags.ancient],
+      tags: [AppBookTags.ancient],
     ),
     CatalogBook(
       assetPath: 'assets/books/太白金星有点烦 -- 马伯庸.txt',

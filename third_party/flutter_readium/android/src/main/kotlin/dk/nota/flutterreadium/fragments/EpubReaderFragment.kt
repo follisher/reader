@@ -47,6 +47,42 @@ private const val TAG = "EpubReaderFragment"
 
 private var instanceNo = 0
 
+internal fun underlineDecorationElement(tint: Int): String {
+    val alpha = (tint ushr 24 and 0xff) / 255.0
+    val red = tint ushr 16 and 0xff
+    val green = tint ushr 8 and 0xff
+    val blue = tint and 0xff
+    val color = "rgba($red,$green,$blue,$alpha)"
+    return """<div class="flutter-readium-underline" style="box-sizing: border-box; border-block-end: 2px solid $color;"/>"""
+}
+
+/**
+ * Decoration templates used for reader notes.
+ *
+ * Highlights stay behind the glyphs, but underlines must be painted in front of
+ * the EPUB content. Per-line geometry is supplied by decorationTextRects.js;
+ * BOXES alone also includes paragraph boxes which swallow their text lines
+ * during Readium's contained-rectangle filtering.
+ */
+internal fun readerNoteDecorationTemplates(): HtmlDecorationTemplates =
+    HtmlDecorationTemplates
+        .defaultTemplates(
+            alpha = 1.0,
+            experimentalPositioning = true,
+        ).also { templates ->
+            templates[Decoration.Style.Underline::class] =
+                HtmlDecorationTemplate(
+                    layout = HtmlDecorationTemplate.Layout.BOXES,
+                    width = HtmlDecorationTemplate.Width.WRAP,
+                    element = { decoration ->
+                        val tint =
+                            (decoration.style as? Decoration.Style.Tinted)?.tint
+                                ?: 0xff000000.toInt()
+                        underlineDecorationElement(tint)
+                    },
+                )
+        }
+
 @ExperimentalCoroutinesApi
 @OptIn(ExperimentalReadiumApi::class)
 class EpubReaderFragment :
@@ -253,6 +289,21 @@ class EpubReaderFragment :
         PluginLog.d(TAG, "::applyCustomCssVariables - update cssVariables:$cssVariables")
 
         evaluateJavascript("readium.setCSSProperties(${JSONObject(cssVariables)});")
+        // Update the live document too, including when an existing WebView
+        // switches back to a daytime theme. New chapters receive the same CSS
+        // through toInjectableStyleSheet().
+        val selectionCss = model.preferences?.selectionStyleSheet().orEmpty()
+        evaluateJavascript(
+            """(function () {
+                var style = document.getElementById('flutter_readium_selection_style');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'flutter_readium_selection_style';
+                    document.head.appendChild(style);
+                }
+                style.textContent = ${JSONObject.quote(selectionCss)};
+            })();""",
+        )
     }
 
     /**
@@ -632,15 +683,12 @@ class EpubReaderFragment :
                             model.fontFamilyDeclarations.flatMap { family ->
                                 family.faces.map { face -> face.asset }
                             },
-                    // Use experimentalPositioning in decoration templates. It places highlights behind text, instead of on top.
+                    // Highlights remain behind text. Underlines use normal stacking so
+                    // every line stays visible when a DOM range crosses block elements.
                     decorationTemplates =
-                        HtmlDecorationTemplates
-                            .defaultTemplates(
-                                alpha = 1.0,
-                                experimentalPositioning = true,
-                            ).also { templates ->
-                                templates[SpotlightStyle::class] = spotlightDecorationTemplate()
-                            },
+                        readerNoteDecorationTemplates().also { templates ->
+                            templates[SpotlightStyle::class] = spotlightDecorationTemplate()
+                        },
                     // Only register the callback if custom selectionActions are added.
                     selectionActionModeCallback =
                         if (ReadiumReader.selectionActions.isNotEmpty()) {

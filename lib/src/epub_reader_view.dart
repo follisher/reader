@@ -39,6 +39,10 @@ class EpubReaderView extends ConsumerStatefulWidget {
 
 class _EpubReaderViewState extends ConsumerState<EpubReaderView>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  // Readium 的 reflowable EPUB 正文以 CSS 的 16px 默认字号为基准；连续模式
+  // 则直接使用 ReaderConfig 的像素字号。保持这个换算基准一致，切换翻页模式时
+  // 才不会让同一字号看起来变小。
+  static const double _readiumBaseFontSize = 16;
   final _reader = EpubReadiumAdapter();
   final _config = engine.ReaderConfig();
   final _menu = ValueNotifier(false);
@@ -86,6 +90,11 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
   bool _lastScrollMode = true;
   int _modeGeneration = 0;
   bool _nativeReady = false;
+  bool _nativeMounted = false;
+  bool _continuousMounted = false;
+  bool _nativeTransitioning = false;
+  bool _continuousTransitioning = false;
+  bool _repairingSavedNotes = false;
   rd.Locator? _pendingNativeLocator;
   bool get _continuousMode =>
       _config.flipType == engine.FlipType.scrollVertical;
@@ -100,6 +109,7 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
 
   Future<void> _goByLink(rd.Link link, rd.Publication publication) async {
     final locator = publication.locatorFromLink(link);
+    debugPrint('EPUB_NAV target=${link.href} current=${_position?.href} index=$_chapter');
     if (locator != null) await _goTo(locator);
   }
 
@@ -107,10 +117,52 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
     final locator = _pendingNativeLocator;
     if (!_nativeReady || _continuousMode || _closing || locator == null) return;
     final generation = _modeGeneration;
-    await _reader.configure(_preferences());
-    if (generation != _modeGeneration || _continuousMode || _closing) return;
-    await _reader.goTo(locator);
-    if (generation == _modeGeneration) _pendingNativeLocator = null;
+    try {
+      await _reader.configure(_preferences());
+      if (generation != _modeGeneration || _continuousMode || _closing) return;
+      await _reader.goTo(locator);
+      if (generation != _modeGeneration || _continuousMode || _closing) return;
+      await _decorate();
+      if (generation == _modeGeneration) _pendingNativeLocator = null;
+      // 等定位后的画面提交，再一次性切换可见的阅读层。
+      await WidgetsBinding.instance.endOfFrame;
+    } finally {
+      if (mounted &&
+          generation == _modeGeneration &&
+          !_continuousMode &&
+          _nativeTransitioning) {
+        setState(() => _nativeTransitioning = false);
+      }
+    }
+  }
+
+  void _repairSavedNotesAfterFirstPage() {
+    final publication = _publication;
+    if (_repairingSavedNotes || publication == null) return;
+    _repairingSavedNotes = true;
+    unawaited(
+      _guard(() async {
+        await _repairNoteSelections(publication);
+        if (_ready && !_closing) await _decorate();
+      }),
+    );
+  }
+
+  void _restoreContinuousPosition() {
+    final locator = _position ?? _initial;
+    if (locator == null) return;
+    final generation = _modeGeneration;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          generation != _modeGeneration ||
+          !_continuousMode ||
+          _closing) {
+        return;
+      }
+      unawaited(
+        _guard(() => _continuous.currentState?.goTo(locator) ?? Future.value()),
+      );
+    });
   }
 
   @override
@@ -151,10 +203,11 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
       if (_repository is! PublicationFileRepository) {
         throw StateError('仓库需要实现 PublicationFileRepository 才能打开 EPUB');
       }
-      _settings = await _repository.loadSettings();
-      for (final kind in ReaderNoteKind.values) {
-        _rows[kind] = await _notes.load(kind);
-      }
+      final settingsFuture = _repository.loadSettings();
+      final pathFuture = (_repository as PublicationFileRepository)
+          .publicationPath(widget.book);
+      final notesFuture = Future.wait(ReaderNoteKind.values.map(_notes.load));
+      _settings = await settingsFuture;
       if (!mounted) return;
       while (_config.fontSize < _settings.fontSize.round().clamp(14, 32)) {
         _config.increaseFont();
@@ -177,15 +230,15 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
               ? engine.FlipType.scrollVertical
               : engine.FlipType.slideHorizontal,
         );
-      final path = await (_repository as PublicationFileRepository)
-          .publicationPath(widget.book);
-      final publication = await _reader.open(path, _preferences());
+      final publication = await _reader.open(await pathFuture, _preferences());
       if (!mounted) {
         await _reader.dispose();
         return;
       }
-      await _repairNoteSelections(publication);
-      if (!mounted) return;
+      final loadedNotes = await notesFuture;
+      for (var index = 0; index < ReaderNoteKind.values.length; index++) {
+        _rows[ReaderNoteKind.values[index]] = loadedNotes[index];
+      }
       // An explicit excerpt chapter takes precedence over saved progress.
       _initial = _locator(widget.initialAnchor);
       if (_initial == null && widget.initialChapter == null) {
@@ -217,9 +270,8 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
         }),
       );
       _lastScrollMode = _continuousMode;
-      if (_continuousMode) {
-        _continuousContent ??= _repository.openBook(widget.book);
-      }
+      _continuousMounted = _continuousMode;
+      _nativeMounted = !_continuousMode;
       _config.addListener(_settingsChanged);
       setState(() => _publication = publication);
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -260,14 +312,12 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
       anchor?.type == 'readium' ? rd.Locator.fromJson(anchor!.value) : null;
   ReaderAnchor _anchor(rd.Locator locator) =>
       ReaderAnchor(type: 'readium', value: locator.toJson());
-  int get _chapter =>
-      (_publication?.readingOrder.indexWhere(
-                (link) =>
-                    link.href.split('#').first ==
-                    _position?.href.split('#').first,
-              ) ??
-              0)
-          .clamp(0, 1000000);
+  int get _chapter => _publication == null
+      ? 0
+      : EpubContinuousDocument.readingOrderIndex(
+          _publication!,
+          _position ?? _initial,
+        );
   double get _progress =>
       (_position?.locations?.totalProgression ??
               (_chapter + (_position?.locations?.progression ?? 0)) /
@@ -275,13 +325,15 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
           .clamp(0, 1);
 
   rd.EPUBPreferences _preferences() => rd.EPUBPreferences(
-    fontSize: _config.fontSize / 20,
+    fontSize: _config.fontSize / _readiumBaseFontSize,
     fontFamily: _config.fontFamily,
     backgroundColor: _config.theme.paperColor,
     textColor: _config.theme.textColor,
     lineHeight: _config.lineHeight,
     paragraphSpacing: _config.paragraphSpacing / _config.fontSize,
-    scroll: _config.flipType == engine.FlipType.scrollVertical,
+    // 原生视图只承载平移模式；上下模式由 Flutter 连续视图承载。保持原生
+    // 排版为横向，切换模式时无需把 WebView 重新排成纵向再排回横向。
+    scroll: false,
     publisherStyles: false,
     columnCount: rd.EpubColumnCount.one,
   );
@@ -294,11 +346,28 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
       _acceptSelectionEvents = true;
       _lastScrollMode = _continuousMode;
       _modeGeneration++;
-      if (!_continuousMode && _position != null) {
-        _pendingNativeLocator = _position;
-        unawaited(_guard(_restoreNativePosition));
-      } else {
+      if (_continuousMode) {
         _pendingNativeLocator = null;
+        _nativeTransitioning = false;
+        _continuousTransitioning = true;
+        if (_continuousMounted) {
+          _restoreContinuousPosition();
+        } else {
+          _continuousMounted = true;
+        }
+      } else if (_position != null) {
+        _continuousTransitioning = false;
+        _pendingNativeLocator = _position;
+        _nativeTransitioning = true;
+        if (_nativeMounted) {
+          unawaited(_guard(_restoreNativePosition));
+        } else {
+          _nativeMounted = true;
+        }
+      } else {
+        _continuousTransitioning = false;
+        _pendingNativeLocator = null;
+        _nativeTransitioning = false;
       }
     }
     if (mounted) setState(() {});
@@ -331,11 +400,16 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
 
   void _onPosition(rd.Locator locator) {
     if (!mounted || _closing) return;
+    debugPrint('EPUB_POS href=${locator.href} index=${EpubContinuousDocument.readingOrderIndex(_publication!, locator)}');
+    if (_continuousMode && _continuousTransitioning) {
+      setState(() => _continuousTransitioning = false);
+    }
     final changed = _position != locator;
     if (_continuousMode && !_ready) {
       _ready = true;
       unawaited(_guard(_decorate));
     }
+    if (_continuousMode) _repairSavedNotesAfterFirstPage();
     if (_continuousMode && !_menu.value) {
       _position = locator;
     } else {
@@ -383,6 +457,7 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
   }
 
   void _menuChanged() {
+    debugPrint('EPUB_MENU visible=${_menu.value} current=${_position?.href} initial=${_initial?.href} index=$_chapter');
     if (_menu.value && _activeSelection != null) {
       _menu.value = false;
       unawaited(_guard(_dismissSelection));
@@ -1356,121 +1431,156 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
         backgroundColor: _config.theme.paperColor,
         body: GestureDetector(
           behavior: HitTestBehavior.translucent,
-          onTap: () {
-            if (_activeSelection != null) {
-              unawaited(_guard(_dismissSelection));
-            }
-          },
+          // Android 的平台视图需要直接赢得手势竞争。外层点击识别器会
+          // 抢走长按，导致 WebView 无法产生选区及划线/评论菜单。
+          onTap: _continuousMode
+              ? () {
+                  if (_activeSelection != null) {
+                    unawaited(_guard(_dismissSelection));
+                  }
+                }
+              : null,
           child: Stack(
             key: _readerSurface,
             children: [
               if (publication == null)
                 const Center(child: CircularProgressIndicator())
-              else
+              else if (_nativeMounted)
                 Offstage(
-                  offstage: _continuousMode,
-                  child: Listener(
-                    key: _nativeSurface,
-                    onPointerDown: (_) {
-                      if (!_selectionBusy) _acceptSelectionEvents = true;
-                    },
-                    child: rd.ReadiumReaderWidget(
-                      publication: publication,
-                      initialLocator: _initial,
-                      shouldShowControls: _menu,
-                      allowedDefaultActions: const {},
-                      suppressNativeSelectionMenu: true,
-                      selectionHandleColor: _config.theme.accentColor,
-                      initialPreferences: _preferences(),
-                      goBackwardSemanticLabel: '上一页',
-                      goForwardSemanticLabel: '下一页',
-                      toggleShowControlsSemanticLabel: '阅读菜单',
-                      selectionActions: const [
-                        rd.SelectionAction(id: 'copy', title: '复制'),
-                        rd.SelectionAction(id: 'underline', title: '划线'),
-                        rd.SelectionAction(id: 'comment', title: '评论'),
-                        rd.SelectionAction(
-                          id: 'removeUnderline',
-                          title: '删除划线',
-                        ),
-                        rd.SelectionAction(id: 'query', title: '查询'),
-                        rd.SelectionAction(id: 'share', title: '分享'),
-                      ],
-                      onTextSelected: _textSelected,
-                      onReaderChannelReady: (channel) =>
-                          _selectionChannel = channel,
-                      onReaderReady: () {
-                        _nativeReady = true;
-                        _syncAutoMotion();
-                        unawaited(
-                          _guard(() async {
-                            await _restoreNativePosition();
-                            if (_ready && !_closing) await _decorate();
-                          }),
-                        );
+                  offstage:
+                      (_continuousMode && !_continuousTransitioning) ||
+                      _nativeTransitioning,
+                  // 与上下翻页的连续视图一致，为状态栏保留安全区；原生平移翻页
+                  // 不能自行感知 Flutter 的安全区，正文会因此顶到屏幕顶部。
+                  child: SafeArea(
+                    bottom: false,
+                    child: Listener(
+                      key: _nativeSurface,
+                      onPointerDown: (_) {
+                        if (!_selectionBusy) _acceptSelectionEvents = true;
                       },
-                      onSelectionAction: (event) =>
-                          unawaited(_guard(() => _selection(event))),
-                      onDecorationInteraction: (event) => unawaited(
-                        _guard(() => _decorationInteraction(event)),
+                      child: rd.ReadiumReaderWidget(
+                        publication: publication,
+                        initialLocator: _initial,
+                        shouldShowControls: _menu,
+                        allowedDefaultActions: const {},
+                        suppressNativeSelectionMenu: true,
+                        selectionHandleColor: _config.theme.accentColor,
+                        initialPreferences: _preferences(),
+                        goBackwardSemanticLabel: '上一页',
+                        goForwardSemanticLabel: '下一页',
+                        toggleShowControlsSemanticLabel: '阅读菜单',
+                        selectionActions: const [
+                          rd.SelectionAction(id: 'copy', title: '复制'),
+                          rd.SelectionAction(id: 'underline', title: '划线'),
+                          rd.SelectionAction(id: 'comment', title: '评论'),
+                          rd.SelectionAction(
+                            id: 'removeUnderline',
+                            title: '删除划线',
+                          ),
+                          rd.SelectionAction(id: 'query', title: '查询'),
+                          rd.SelectionAction(id: 'share', title: '分享'),
+                        ],
+                        onTextSelected: _textSelected,
+                        onReaderChannelReady: (channel) =>
+                            _selectionChannel = channel,
+                        onReaderReady: () {
+                          _nativeReady = true;
+                          if (mounted) setState(() {});
+                          _syncAutoMotion();
+                          if (!_continuousMode) {
+                            _repairSavedNotesAfterFirstPage();
+                          }
+                          unawaited(
+                            _guard(() async {
+                              await _restoreNativePosition();
+                              if (_ready && !_closing) await _decorate();
+                            }),
+                          );
+                        },
+                        onSelectionAction: (event) =>
+                            unawaited(_guard(() => _selection(event))),
+                        onDecorationInteraction: (event) => unawaited(
+                          _guard(() => _decorationInteraction(event)),
+                        ),
                       ),
                     ),
                   ),
                 ),
-              if (publication != null && _continuousMode)
-                EpubContinuousView(
-                  key: _continuous,
-                  content: _continuousContent ??= _repository.openBook(
-                    widget.book,
-                  ),
-                  publication: publication,
-                  config: _config,
-                  initialLocator: _position ?? _initial,
-                  decorations: _decorations,
-                  autoReading: _autoReading,
-                  autoPaused: _autoPaused,
-                  autoInterval: _autoInterval,
-                  onPosition: _onPosition,
-                  onSelection: (event) {
-                    _acceptSelectionEvents = true;
-                    _textSelected(event);
-                  },
-                  onSelectionGeometryChanged: () {
-                    final event = _activeSelection;
-                    if (event != null) {
-                      unawaited(_guard(() => _refreshSelectionGeometry(event)));
-                    }
-                  },
-                  onSelectionCleared: () {
-                    if (mounted &&
-                        (_activeSelection != null ||
-                            _selectedUnderlineIds.isNotEmpty)) {
-                      setState(() {
-                        _activeSelection = null;
-                        _selectedUnderlineIds = const {};
-                      });
-                    }
-                  },
-                  onTap: () {
-                    if (_activeSelection != null) {
-                      _continuous.currentState?.clearSelection();
-                      setState(() => _activeSelection = null);
-                    } else {
-                      _menu.value = !_menu.value;
-                    }
-                  },
-                  onError: _report,
-                  onEnd: _stopAuto,
-                  onDecorationTap: (marks) => unawaited(
-                    _guard(() async {
-                      if (_activeSelection != null) {
-                        await _dismissSelection();
-                      } else {
-                        await _openParagraphComments(
-                          marks.map((mark) => mark.id),
-                        );
-                      }
-                    }),
+              if (publication != null && _continuousMounted)
+                Offstage(
+                  // 切换期间只显示旧正文，目标视图就绪后再交接。
+                  offstage:
+                      (_continuousMode && _continuousTransitioning) ||
+                      (!_continuousMode && !_nativeTransitioning),
+                  child: IgnorePointer(
+                    ignoring: !_continuousMode,
+                    child: EpubContinuousView(
+                      key: _continuous,
+                      content: _continuousContent ??= _repository.openBook(
+                        widget.book,
+                      ),
+                      publication: publication,
+                      config: _config,
+                      initialLocator: _position ?? _initial,
+                      decorations: _decorations,
+                      autoReading: _autoReading,
+                      autoPaused: _autoPaused,
+                      autoInterval: _autoInterval,
+                      onPosition: (locator) {
+                        if (_continuousMode) _onPosition(locator);
+                      },
+                      onContentReady: () {
+                        if (mounted &&
+                            _continuousMode &&
+                            _continuousTransitioning) {
+                          setState(() => _continuousTransitioning = false);
+                        }
+                      },
+                      onSelection: (event) {
+                        _acceptSelectionEvents = true;
+                        _textSelected(event);
+                      },
+                      onSelectionGeometryChanged: () {
+                        final event = _activeSelection;
+                        if (event != null) {
+                          unawaited(
+                            _guard(() => _refreshSelectionGeometry(event)),
+                          );
+                        }
+                      },
+                      onSelectionCleared: () {
+                        if (mounted &&
+                            (_activeSelection != null ||
+                                _selectedUnderlineIds.isNotEmpty)) {
+                          setState(() {
+                            _activeSelection = null;
+                            _selectedUnderlineIds = const {};
+                          });
+                        }
+                      },
+                      onTap: () {
+                        if (_activeSelection != null) {
+                          _continuous.currentState?.clearSelection();
+                          setState(() => _activeSelection = null);
+                        } else {
+                          _menu.value = !_menu.value;
+                        }
+                      },
+                      onError: _report,
+                      onEnd: _stopAuto,
+                      onDecorationTap: (marks) => unawaited(
+                        _guard(() async {
+                          if (_activeSelection != null) {
+                            await _dismissSelection();
+                          } else {
+                            await _openParagraphComments(
+                              marks.map((mark) => mark.id),
+                            );
+                          }
+                        }),
+                      ),
+                    ),
                   ),
                 ),
               if (_activeSelection != null) _positionedSelectionToolbar(),

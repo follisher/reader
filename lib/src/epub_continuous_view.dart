@@ -13,6 +13,7 @@ import 'package:html/dom.dart' as dom;
 
 import 'epub_continuous_document.dart';
 import 'epub_heading.dart';
+import 'epub_underline_layer.dart';
 import 'models.dart';
 
 class EpubContinuousView extends StatefulWidget {
@@ -25,6 +26,7 @@ class EpubContinuousView extends StatefulWidget {
     required this.onSelection,
     required this.onTap,
     required this.onError,
+    this.onContentReady,
     this.initialLocator,
     this.decorations = const [],
     this.onDecorationTap,
@@ -45,6 +47,7 @@ class EpubContinuousView extends StatefulWidget {
   final VoidCallback? onSelectionCleared;
   final VoidCallback? onSelectionGeometryChanged;
   final ValueChanged<Object> onError;
+  final VoidCallback? onContentReady;
   final List<rd.ReaderDecoration> decorations;
   final ValueChanged<List<rd.ReaderDecoration>>? onDecorationTap;
   final VoidCallback? onEnd;
@@ -195,6 +198,7 @@ class EpubContinuousViewState extends State<EpubContinuousView>
     final document = _document;
     if (document == null || widget.publication.readingOrder.isEmpty) return;
     final generation = ++_generation;
+    _visible = null;
     _autoEnded = false;
     final chapter = document.chapterFor(locator);
     _restoring = true;
@@ -240,6 +244,7 @@ class EpubContinuousViewState extends State<EpubContinuousView>
       );
       _restoring = false;
       _schedulePosition();
+      widget.onContentReady?.call();
       _syncAuto();
     });
     unawaited(_extend(chapter - 1, generation));
@@ -589,7 +594,9 @@ class EpubContinuousViewState extends State<EpubContinuousView>
                 '#${(color.toARGB32() & 0xffffff).toRadixString(16).padLeft(6, '0')}';
             styles.add(
               mark.style.style == rd.DecorationStyle.underline
-                  ? 'text-decoration:underline;text-decoration-color:$css'
+                  // 连续模式由 Flutter HtmlWidget 渲染，不支持 CSS box-shadow。
+                  // 零粗细标记交给 EpubUnderlineLayer 按每行固定 2px 绘制。
+                  ? 'text-decoration:underline;text-decoration-color:$css;text-decoration-thickness:0%'
                   : 'background-color:$css',
             );
           }
@@ -693,83 +700,86 @@ class EpubContinuousViewState extends State<EpubContinuousView>
             item.id,
             SelectionListenerNotifier.new,
           ),
-          child: HtmlWidget(
-            _indentedMarkup(_markedMarkup(markup, marks)),
-            onTapUrl: (url) {
-              if (!url.startsWith('reader-comment:')) return false;
-              final ids =
-                  (jsonDecode(
-                            Uri.decodeComponent(
-                              url.substring('reader-comment:'.length),
-                            ),
-                          )
-                          as List)
-                      .cast<String>()
-                      .toSet();
-              widget.onDecorationTap?.call(
-                marks.where((mark) => ids.contains(mark.id)).toList(),
-              );
-              return true;
-            },
-            textStyle: config.textStyle,
-            customStylesBuilder: (element) {
-              if (element.localName == 'h2') {
-                return {
-                  'font-size': '${config.fontSize * 1.3}px',
-                  'text-align': 'center',
-                };
-              }
-              if (element.localName == 'h1') {
-                return {
-                  'font-size': '${config.fontSize * 1.5}px',
-                  'text-align': 'center',
-                };
-              }
-              if (const {
-                'h1',
-                'h3',
-                'h4',
-                'h5',
-                'h6',
-              }.contains(element.localName)) {
-                return {'text-align': 'center'};
-              }
-              if (element.localName == 'p') {
-                return {'margin': '0'};
-              }
-              return null;
-            },
-            customWidgetBuilder: (element) {
-              if (element.localName == 'reader-indent') {
-                return InlineCustomWidget(
-                  alignment: PlaceholderAlignment.bottom,
-                  child: SelectionContainer.disabled(
-                    child: SizedBox(width: config.fontSize * 2),
+          child: EpubUnderlineLayer(
+            child: HtmlWidget(
+              _indentedMarkup(_markedMarkup(markup, marks)),
+              onTapUrl: (url) {
+                if (!url.startsWith('reader-comment:')) return false;
+                final ids =
+                    (jsonDecode(
+                              Uri.decodeComponent(
+                                url.substring('reader-comment:'.length),
+                              ),
+                            )
+                            as List)
+                        .cast<String>()
+                        .toSet();
+                widget.onDecorationTap?.call(
+                  marks.where((mark) => ids.contains(mark.id)).toList(),
+                );
+                return true;
+              },
+              textStyle: config.textStyle,
+              customStylesBuilder: (element) {
+                if (element.localName == 'h2') {
+                  return {
+                    'font-size': '${config.fontSize * 1.3}px',
+                    'text-align': 'center',
+                  };
+                }
+                if (element.localName == 'h1') {
+                  return {
+                    'font-size': '${config.fontSize * 1.5}px',
+                    'text-align': 'center',
+                  };
+                }
+                if (const {
+                  'h1',
+                  'h3',
+                  'h4',
+                  'h5',
+                  'h6',
+                }.contains(element.localName)) {
+                  return {'text-align': 'center'};
+                }
+                if (element.localName == 'p') {
+                  return {'margin': '0'};
+                }
+                return null;
+              },
+              customWidgetBuilder: (element) {
+                if (element.localName == 'reader-indent') {
+                  return InlineCustomWidget(
+                    alignment: PlaceholderAlignment.bottom,
+                    child: SelectionContainer.disabled(
+                      child: SizedBox(width: config.fontSize * 2),
+                    ),
+                  );
+                }
+                if (element.localName != 'img') return null;
+                final path = element.attributes['data-reader-resource'];
+                if (path == null) return const SizedBox.shrink();
+                final future = _image(path);
+                return AspectRatio(
+                  aspectRatio: _imageRatios[path] ?? 1,
+                  child: FutureBuilder<_ImageData?>(
+                    future: future,
+                    builder: (_, snapshot) {
+                      final data = _imageBytes[path] ?? snapshot.data;
+                      return data == null
+                          ? const SizedBox.shrink()
+                          : Image.memory(
+                              data.bytes,
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              errorBuilder: (_, _, _) =>
+                                  const SizedBox.shrink(),
+                            );
+                    },
                   ),
                 );
-              }
-              if (element.localName != 'img') return null;
-              final path = element.attributes['data-reader-resource'];
-              if (path == null) return const SizedBox.shrink();
-              final future = _image(path);
-              return AspectRatio(
-                aspectRatio: _imageRatios[path] ?? 1,
-                child: FutureBuilder<_ImageData?>(
-                  future: future,
-                  builder: (_, snapshot) {
-                    final data = _imageBytes[path] ?? snapshot.data;
-                    return data == null
-                        ? const SizedBox.shrink()
-                        : Image.memory(
-                            data.bytes,
-                            fit: BoxFit.contain,
-                            gaplessPlayback: true,
-                            errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                          );
-                  },
-                ),
-              );
-            },
+              },
+            ),
           ),
         ),
       ),
@@ -814,92 +824,105 @@ class EpubContinuousViewState extends State<EpubContinuousView>
     if (_document == null || _after.isEmpty) {
       return Center(child: Text('正文加载失败：$_error'));
     }
-    return SafeArea(
-      bottom: false,
-      child: SelectionArea(
-        key: _selection,
-        focusNode: _selectionFocus,
-        contextMenuBuilder: (_, _) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _hasSelection) {
-              widget.onSelectionGeometryChanged?.call();
-            }
-          });
-          return const SizedBox.shrink();
-        },
-        onSelectionChanged: (selection) {
-          if (_clearingSelection) return;
-          final raw = selection?.plainText;
-          _hasSelection = raw != null && raw.isNotEmpty;
-          if (!_hasSelection) {
-            widget.onSelectionCleared?.call();
-            return;
-          }
-          final item = _selectedBlock;
-          if (item == null || item.block < 0) return;
-          // Inline layout placeholders are never part of the source quote.
-          final text = raw!.replaceAll('\uFFFC', '');
-          if (text.trim().isEmpty) {
-            clearSelection();
-            return;
-          }
-          widget.onSelection(
-            rd.TextSelectionEvent(
-              locator: _document!.locator(
-                item.chapter,
-                item.block,
-                selection: text,
-                selectionOffset:
-                    _selectionNotifiers[item.id]?.registered == true
-                    ? _sourceSelectionOffset(item)
-                    : null,
-              ),
-              selectedText: text,
-            ),
-          );
-        },
-        child: Listener(
-          onPointerDown: (_) => _pauseForGesture(),
-          onPointerUp: (_) => _resumeAfterGesture(),
-          onPointerCancel: (_) => _resumeAfterGesture(),
-          child: GestureDetector(
-            onTap: () {
-              if (_hasSelection) {
-                clearSelection();
-              } else {
-                widget.onTap();
-              }
+    return Theme(
+      data: Theme.of(context).copyWith(
+        textSelectionTheme: TextSelectionThemeData(
+          cursorColor: widget.config.theme.accentColor,
+          selectionHandleColor: widget.config.theme.accentColor,
+          selectionColor: widget.config.theme.selectionColor,
+        ),
+      ),
+      child: DefaultSelectionStyle(
+        cursorColor: widget.config.theme.accentColor,
+        selectionColor: widget.config.theme.selectionColor,
+        child: SafeArea(
+          bottom: false,
+          child: SelectionArea(
+            key: _selection,
+            focusNode: _selectionFocus,
+            contextMenuBuilder: (_, _) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && _hasSelection) {
+                  widget.onSelectionGeometryChanged?.call();
+                }
+              });
+              return const SizedBox.shrink();
             },
-            child: NotificationListener<ScrollMetricsNotification>(
-              onNotification: (_) {
-                _schedulePosition();
-                return false;
-              },
-              child: CustomScrollView(
-                key: _viewport,
-                controller: _scroll,
-                center: _center,
-                scrollCacheExtent: const ScrollCacheExtent.viewport(2),
-                slivers: [
-                  if (_first > 0)
-                    const SliverToBoxAdapter(
-                      child: SizedBox(
-                        height: 80,
-                        child: Center(child: Text('正在加载正文…')),
-                      ),
-                    ),
-                  _sliver(_before),
-                  _sliver(_after, key: _center),
-                  if (_last + 1 < widget.publication.readingOrder.length)
-                    const SliverToBoxAdapter(
-                      child: SizedBox(
-                        height: 80,
-                        child: Center(child: Text('正在加载正文…')),
-                      ),
-                    ),
-                  if (_last + 1 == widget.publication.readingOrder.length)
-                    const SliverToBoxAdapter(child: SizedBox(height: 100)),
-                ],
+            onSelectionChanged: (selection) {
+              if (_clearingSelection) return;
+              final raw = selection?.plainText;
+              _hasSelection = raw != null && raw.isNotEmpty;
+              if (!_hasSelection) {
+                widget.onSelectionCleared?.call();
+                return;
+              }
+              final item = _selectedBlock;
+              if (item == null || item.block < 0) return;
+              // Inline layout placeholders are never part of the source quote.
+              final text = raw!.replaceAll('\uFFFC', '');
+              if (text.trim().isEmpty) {
+                clearSelection();
+                return;
+              }
+              widget.onSelection(
+                rd.TextSelectionEvent(
+                  locator: _document!.locator(
+                    item.chapter,
+                    item.block,
+                    selection: text,
+                    selectionOffset:
+                        _selectionNotifiers[item.id]?.registered == true
+                        ? _sourceSelectionOffset(item)
+                        : null,
+                  ),
+                  selectedText: text,
+                ),
+              );
+            },
+            child: Listener(
+              onPointerDown: (_) => _pauseForGesture(),
+              onPointerUp: (_) => _resumeAfterGesture(),
+              onPointerCancel: (_) => _resumeAfterGesture(),
+              child: GestureDetector(
+                onTap: () {
+                  if (_hasSelection) {
+                    clearSelection();
+                  } else {
+                    widget.onTap();
+                  }
+                },
+                child: NotificationListener<ScrollMetricsNotification>(
+                  onNotification: (_) {
+                    _schedulePosition();
+                    return false;
+                  },
+                  child: CustomScrollView(
+                    key: _viewport,
+                    controller: _scroll,
+                    center: _center,
+                    scrollCacheExtent: const ScrollCacheExtent.viewport(2),
+                    slivers: [
+                      if (_first > 0)
+                        const SliverToBoxAdapter(
+                          child: SizedBox(
+                            height: 80,
+                            child: Center(child: Text('正在加载正文…')),
+                          ),
+                        ),
+                      _sliver(_before),
+                      _sliver(_after, key: _center),
+                      if (_last + 1 < widget.publication.readingOrder.length)
+                        const SliverToBoxAdapter(
+                          child: SizedBox(
+                            height: 80,
+                            child: Center(child: Text('正在加载正文…')),
+                          ),
+                        ),
+                      if (_last + 1 == widget.publication.readingOrder.length)
+                        const SliverToBoxAdapter(child: SizedBox(height: 100)),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),

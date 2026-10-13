@@ -39,14 +39,27 @@ class EpubContinuousDocument {
     return a == b || a.endsWith('/$b') || b.endsWith('/$a');
   }
 
-  int chapterFor(rd.Locator? locator) {
+  /// Readium may report an EPUB-root-prefixed href for a reading-order link.
+  static int readingOrderIndex(
+    rd.Publication publication,
+    rd.Locator? locator,
+  ) {
     if (locator == null) return 0;
-    final exact = _links[path(locator.href)];
-    if (exact != null) return exact;
+    final exact = publication.readingOrder.indexWhere(
+      (link) => path(link.href) == path(locator.href),
+    );
+    if (exact >= 0) return exact;
     final index = publication.readingOrder.indexWhere(
       (link) => samePath(link.href, locator.href),
     );
     return index < 0 ? 0 : index;
+  }
+
+  int chapterFor(rd.Locator? locator) {
+    if (locator == null) return 0;
+    final exact = _links[path(locator.href)];
+    if (exact != null) return exact;
+    return readingOrderIndex(publication, locator);
   }
 
   Future<BookChapter> load(int index) {

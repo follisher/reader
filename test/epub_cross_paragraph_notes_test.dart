@@ -257,14 +257,46 @@ void main() {
         .map((w) => w.html)
         .toList();
     expect(
-      markup.where((s) => s.contains('text-decoration:underline')).length,
-      2,
-    );
-    expect(
       markup.where((s) => s.contains('background-color:#ffeb3b')).length,
       1,
     );
     expect(find.byType(engine.ReaderCommentBadge), findsNothing);
+    // Inspect the rendered spans: unsupported CSS can be present in markup
+    // while producing no visible underline in Flutter's paragraph renderer.
+    final underlined = <String>[];
+    final highlighted = <String>[];
+    void inspect(InlineSpan span, TextStyle inherited) {
+      final style = inherited.merge(span.style);
+      if (span is TextSpan) {
+        if (style.decoration?.contains(TextDecoration.underline) == true &&
+            style.decorationColor?.toARGB32() == Colors.red.toARGB32()) {
+          underlined.add(span.text ?? '');
+        }
+        if ((style.backgroundColor ?? style.background?.color)?.toARGB32() ==
+            Colors.yellow.toARGB32()) {
+          highlighted.add(span.text ?? '');
+        }
+        for (final child in span.children ?? const <InlineSpan>[]) {
+          inspect(child, style);
+        }
+      }
+    }
+    for (final paragraph in tester.renderObjectList<RenderParagraph>(
+      find.byType(RichText),
+    )) {
+      inspect(paragraph.text, const TextStyle());
+    }
+    expect(underlined.join(), '结尾。第二段开头');
+    expect(highlighted.join(), '第一段结尾。');
+    config.setTheme(engine.ReaderTheme.night);
+    // EpubReaderView rebuilds this child when ReaderConfig changes.
+    tester.element(find.byType(EpubContinuousView)).markNeedsBuild();
+    await frames(tester);
+    final areaContext = tester.element(find.byType(SelectionArea));
+    expect(Theme.of(areaContext).textSelectionTheme.selectionHandleColor,
+        engine.ReaderTheme.night.accentColor);
+    expect(DefaultSelectionStyle.of(areaContext).selectionColor,
+        engine.ReaderTheme.night.selectionColor);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     config.dispose();

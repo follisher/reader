@@ -180,6 +180,7 @@ data class InjectionAsset(
 private val BUILT_IN_INJECTIONS =
     listOf(
         InjectionAsset("assets/helpers/flutterReadiumTools.js", "flutter_readium"),
+        InjectionAsset("assets/helpers/decorationTextRects.js", "flutter_readium"),
         InjectionAsset("assets/helpers/flutterReadiumTools.css", "flutter_readium"),
     )
 

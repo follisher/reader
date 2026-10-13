@@ -10,5 +10,6 @@
     <style name="FlutterReadiumSelectionHandlesLight">
         <item name="android:colorAccent">#FFF5F5F5</item>
         <item name="android:colorControlActivated">#FFF5F5F5</item>
+        <item name="android:textColorHighlight">#FF4A4A4A</item>
     </style>
 </resources>

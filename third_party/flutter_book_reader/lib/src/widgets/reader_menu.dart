@@ -403,11 +403,17 @@ class _ReaderMenuState extends State<ReaderMenu> {
 
   // 上一章 / 进度 / 下一章
   Widget _buildChapterSeek() {
+    final bool hasPreviousChapter = widget.chapterIndex > 0;
+    final bool hasNextChapter = widget.chapterIndex < widget.chapterCount - 1;
     return Padding(
       padding: const EdgeInsets.fromLTRB(26, 18, 26, 4),
       child: Row(
         children: <Widget>[
-          _seekText(_labels.prevChapter, widget.onPrevChapter),
+          _seekText(
+            _labels.prevChapter,
+            widget.onPrevChapter,
+            enabled: hasPreviousChapter,
+          ),
           Expanded(
             child: _buildSlider(
               value: _dragProgress ?? widget.progress,
@@ -423,21 +429,33 @@ class _ReaderMenuState extends State<ReaderMenu> {
               },
             ),
           ),
-          _seekText(_labels.nextChapter, widget.onNextChapter),
+          _seekText(
+            _labels.nextChapter,
+            widget.onNextChapter,
+            enabled: hasNextChapter,
+          ),
         ],
       ),
     );
   }
 
-  Widget _seekText(String text, VoidCallback onTap) => GestureDetector(
+  Widget _seekText(
+    String text,
+    VoidCallback onTap, {
+    required bool enabled,
+  }) =>
+      GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: onTap,
+        onTap: enabled ? onTap : null,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
           child: Text(
             text,
             style: TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w600, color: _sub),
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: enabled ? _sub : _sub.withValues(alpha: 0.38),
+            ),
           ),
         ),
       );
