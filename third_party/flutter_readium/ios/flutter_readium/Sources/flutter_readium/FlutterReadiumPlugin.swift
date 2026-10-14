@@ -813,11 +813,11 @@ extension FlutterReadiumPlugin {
     fromUrlStr: String,
   ) async -> Result<Publication, ReadiumError> {
     var url: URL
-    if fromUrlStr.hasPrefix("http") {
-      guard let httpUrl = URL(string: fromUrlStr) else {
+    if let absoluteUrl = URL(string: fromUrlStr), absoluteUrl.scheme != nil {
+      guard absoluteUrl.isFileURL || absoluteUrl.scheme == "http" || absoluteUrl.scheme == "https" else {
         return .failure(ReadiumError.notFound("Invalid pub URL: \(fromUrlStr)"))
       }
-      url = httpUrl
+      url = absoluteUrl
     } else {
       url = URL(fileURLWithPath: fromUrlStr)
     }

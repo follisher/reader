@@ -12,3 +12,7 @@ coverage/
 **/key.properties
 **/*.keystore
 **/*.jks
+
+# Local Swift Package Manager state generated while building flutter_readium.
+third_party/flutter_readium/ios/flutter_readium/.build/
+third_party/flutter_readium/ios/flutter_readium/.swiftpm/
