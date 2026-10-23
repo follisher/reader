@@ -245,10 +245,16 @@ void main() {
         expect(duplicate.book.id, book.id);
         expect(duplicate.isDuplicate, isTrue);
         expect((await repo.watchBooks().first).length, 1);
-        await repo.saveLocation(
-          book.id,
-          const ReadingLocation(chapter: 1, block: 0, progress: .5),
-        );
+        await Future.wait([
+          repo.saveLocation(
+            book.id,
+            const ReadingLocation(chapter: 0, block: 0, progress: .1),
+          ),
+          repo.saveLocation(
+            book.id,
+            const ReadingLocation(chapter: 1, block: 0, progress: .5),
+          ),
+        ]);
         await repo.saveSettings(const ReaderSettings(fontSize: 26, dark: true));
         await repo.close();
         repo = await LocalBookshelfRepository.create(

@@ -82,6 +82,12 @@ void main() {
       edition.chapters,
     );
   });
+  test('batch pagination matches individual chapter pagination', () {
+    final chapters = [chapter('甲乙丙'), chapter(List.filled(1000, '书').join())];
+    expect(paginateCoverChapters(chapters), [
+      for (final value in chapters) paginateCoverChapter(value),
+    ]);
+  });
   test(
     'ASCII takes half a CJK column and supplementary runes retain UTF16 offsets',
     () {

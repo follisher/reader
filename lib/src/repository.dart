@@ -172,8 +172,18 @@ class LocalBookshelfRepository
   final _layouts = <String, Future<BookLayout?>>{};
   Future<void> _queue = Future.value();
 
+  // Reading position updates are frequent and independent of library
+  // mutations. Keep only the newest pending position per book so importing,
+  // deleting, tag synchronization and cover work never wait behind them.
+  Future<void> _locationQueue = Future.value();
+  final _pendingLocations = <String, ReadingLocation>{};
+  final _queuedLocationWrites = <String>{};
+  final _locationWriteCompletions = <String, Completer<void>>{};
+
   final _coverPagination = <String, Future<BookCoverPagination>>{};
   Future<void> _coverQueue = Future.value();
+  Future<void> _coverExtractionQueue = Future.value();
+  bool _coverExtractionScheduled = false;
 
   @override
   Future<BookCoverPagination> loadCoverPagination(String bookId) =>
@@ -209,17 +219,16 @@ class LocalBookshelfRepository
               /* Rebuild a partial or obsolete cache. */
             }
           }
-          final pages = <List<int>>[];
+          final chapters = <BookChapter>[];
           for (var i = 0; i < content.chapters.length; i++) {
             final chapter = content is LayoutBookContent
                 ? await content.readOriginalChapter(i)
                 : await content.readChapter(i);
-            pages.add(
-              Platform.environment['FLUTTER_TEST'] == 'true'
-                  ? paginateCoverChapter(chapter)
-                  : await compute(paginateCoverChapter, chapter),
-            );
+            chapters.add(chapter);
           }
+          final pages = Platform.environment['FLUTTER_TEST'] == 'true'
+              ? paginateCoverChapters(chapters)
+              : await compute(paginateCoverChapters, chapters);
           final pagination = BookCoverPagination(pages);
           try {
             await file.parent.create(recursive: true);
@@ -253,7 +262,7 @@ class LocalBookshelfRepository
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 11,
+        version: 12,
         onCreate: (db, _) async {
           await db.execute(
             'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0)',
@@ -315,6 +324,9 @@ class LocalBookshelfRepository
               'ALTER TABLE books ADD COLUMN cache_ready INTEGER NOT NULL DEFAULT 0',
             );
           }
+          // Create indexes only after older schemas have gained the notes
+          // table and the columns referenced by those indexes.
+          if (oldVersion < 12) await _createNotesIndexes(db);
         },
       ),
     );
@@ -373,6 +385,10 @@ class LocalBookshelfRepository
     await db.execute(
       'CREATE INDEX IF NOT EXISTS reader_notes_kind_created '
       'ON reader_notes(kind, created_at DESC, note_key)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS reader_notes_created '
+      'ON reader_notes(created_at DESC, note_key DESC)',
     );
   }
 
@@ -602,16 +618,27 @@ class LocalBookshelfRepository
     ),
   );
 
-  Future<List<Book>> _booksWithTags(List<Map<String, Object?>> rows) async {
+  /// Loads the shelf and its tags in one query. A separate tag query per book
+  /// is notably expensive for large libraries and makes every stream refresh
+  /// queue dozens of SQLite operations.
+  Future<List<Book>> _loadBooksWithTags() async {
+    final rows = await _db.rawQuery(
+      'SELECT books.*, '
+      'tags.id AS tag_id, tags.name AS tag_name, tags.color AS tag_color '
+      'FROM books '
+      'LEFT JOIN book_tags ON book_tags.book_id = books.id '
+      'LEFT JOIN tags ON tags.id = book_tags.tag_id '
+      'WHERE books.is_hidden = 0 '
+      'ORDER BY books.last_read_at IS NULL, books.last_read_at DESC, '
+      'books.added_at DESC, books.title, books.id, tags.name',
+    );
     final result = <Book>[];
-    for (final row in rows) {
-      final book = _book(row);
-      final tagRows = await _db.rawQuery(
-        'SELECT tags.id, tags.name, tags.color FROM tags '
-        'JOIN book_tags ON book_tags.tag_id = tags.id '
-        'WHERE book_tags.book_id = ? ORDER BY tags.name',
-        [book.id],
-      );
+    Book? current;
+    var tags = <BookTag>[];
+
+    void addCurrent() {
+      final book = current;
+      if (book == null) return;
       result.add(
         Book(
           id: book.id,
@@ -625,17 +652,29 @@ class LocalBookshelfRepository
           cacheReady: book.cacheReady,
           location: book.location,
           lastReadAt: book.lastReadAt,
-          tags: [
-            for (final tag in tagRows)
-              BookTag(
-                id: tag['id'] as int,
-                name: tag['name'] as String,
-                color: tag['color'] as String?,
-              ),
-          ],
+          tags: tags,
         ),
       );
     }
+
+    for (final row in rows) {
+      if (current?.id != row['id']) {
+        addCurrent();
+        current = _book(row);
+        tags = <BookTag>[];
+      }
+      final tagId = row['tag_id'] as int?;
+      if (tagId != null) {
+        tags.add(
+          BookTag(
+            id: tagId,
+            name: row['tag_name'] as String,
+            color: row['tag_color'] as String?,
+          ),
+        );
+      }
+    }
+    addCurrent();
     return result;
   }
 
@@ -648,15 +687,8 @@ class LocalBookshelfRepository
     void refresh() {
       pending = pending.then((_) async {
         try {
-          await _cachePendingCovers();
-          final rows = await _db.query(
-            'books',
-            where: 'is_hidden = 0',
-            orderBy:
-                'last_read_at IS NULL, last_read_at DESC, added_at DESC, title',
-          );
           if (!controller.isClosed) {
-            controller.add(await _booksWithTags(rows));
+            controller.add(await _loadBooksForShelf());
           }
         } catch (e, st) {
           if (!controller.isClosed) controller.addError(e, st);
@@ -679,13 +711,8 @@ class LocalBookshelfRepository
   }
 
   Future<List<Book>> _loadBooksForShelf() async {
-    await _cachePendingCovers();
-    final rows = await _db.query(
-      'books',
-      where: 'is_hidden = 0',
-      orderBy: 'last_read_at IS NULL, last_read_at DESC, added_at DESC, title',
-    );
-    return _booksWithTags(rows);
+    _schedulePendingCoverCaching();
+    return _loadBooksWithTags();
   }
 
   @override
@@ -1087,8 +1114,30 @@ class LocalBookshelfRepository
   }
 
   @override
-  Future<void> saveLocation(String bookId, ReadingLocation location) =>
-      _serial(() async {
+  Future<void> saveLocation(String bookId, ReadingLocation location) {
+    _pendingLocations[bookId] = location;
+    if (_queuedLocationWrites.add(bookId)) {
+      final completion = Completer<void>();
+      _locationWriteCompletions[bookId] = completion;
+      _locationQueue = _locationQueue.then((_) async {
+        try {
+          await _flushLatestLocation(bookId);
+          completion.complete();
+        } catch (error, stack) {
+          completion.completeError(error, stack);
+        }
+      });
+    }
+    return _locationWriteCompletions[bookId]!.future;
+  }
+
+  Future<void> _flushLatestLocation(String bookId) async {
+    // If another position arrives during the short database write, it replaces
+    // the pending value. No historical intermediate position is useful.
+    try {
+      while (true) {
+        final location = _pendingLocations.remove(bookId);
+        if (location == null) break;
         await _db.update(
           'books',
           {
@@ -1105,7 +1154,12 @@ class LocalBookshelfRepository
           whereArgs: [bookId],
         );
         _notifyProgressChanged();
-      });
+      }
+    } finally {
+      _queuedLocationWrites.remove(bookId);
+      _locationWriteCompletions.remove(bookId);
+    }
+  }
 
   @override
   Future<void> removeBook(String bookId) => _serial(() async {
@@ -1252,42 +1306,62 @@ class LocalBookshelfRepository
         _notifyContentChanges();
       });
 
-  Future<void> _cachePendingCovers() => _serial(() async {
+  /// Starts legacy cover extraction after the shelf query has returned. The
+  /// first paint must not wait for EPUB parsing or a native PDF thumbnail.
+  void _schedulePendingCoverCaching() {
+    if (_coverExtractionScheduled) return;
+    _coverExtractionScheduled = true;
+    _coverExtractionQueue = _coverExtractionQueue.catchError((Object _) {}).then((
+      _,
+    ) async {
+      try {
+        while (await _cacheOnePendingCover()) {
+          // Process one book at a time to keep memory and native work bounded.
+        }
+      } finally {
+        _coverExtractionScheduled = false;
+      }
+    });
+  }
+
+  Future<bool> _cacheOnePendingCover() async {
     final rows = await _db.query(
       'books',
       columns: ['id', 'file_name'],
       where: 'format IN (?, ?) AND cover_checked = 0 AND is_hidden = 0',
       whereArgs: [BookFormat.epub.name, BookFormat.pdf.name],
+      limit: 1,
     );
-    for (final row in rows) {
-      final id = row['id'] as String;
-      String? coverFileName;
-      try {
-        final file = File(p.join(directory.path, row['file_name'] as String));
-        if (await file.exists()) {
-          final cover = p.extension(file.path).toLowerCase() == '.pdf'
-              ? await PdfCoverRenderer.firstPage(file.path)
-              : await (await _parse(
-                  await file.readAsBytes(),
-                  file.path,
-                )).cover();
-          if (cover != null &&
-              cover.isNotEmpty &&
-              cover.length <= _maxCoverBytes) {
-            coverFileName = await _writeCover(id, cover);
-          }
+    if (rows.isEmpty) return false;
+    final row = rows.single;
+    final id = row['id'] as String;
+    String? coverFileName;
+    try {
+      final file = File(p.join(directory.path, row['file_name'] as String));
+      if (await file.exists()) {
+        final cover = p.extension(file.path).toLowerCase() == '.pdf'
+            ? await PdfCoverRenderer.firstPage(file.path)
+            : await (await _parse(await file.readAsBytes(), file.path)).cover();
+        if (cover != null &&
+            cover.isNotEmpty &&
+            cover.length <= _maxCoverBytes) {
+          coverFileName = await _writeCover(id, cover);
         }
-      } catch (_) {
-        // 旧书籍无法提取封面时，仍可继续阅读其原始文件。
       }
+    } catch (_) {
+      // 旧书籍无法提取封面时，仍可继续阅读其原始文件。
+    }
+    await _serial(() async {
       await _db.update(
         'books',
         {'cover_file_name': coverFileName, 'cover_checked': 1},
-        where: 'id = ?',
+        where: 'id = ? AND is_hidden = 0',
         whereArgs: [id],
       );
-    }
-  });
+    });
+    _notifyContentChanges();
+    return true;
+  }
 
   Future<String> _writeCover(String id, Uint8List bytes) async {
     final fileName = p.join('covers', '$id.cover');
@@ -1459,7 +1533,9 @@ class LocalBookshelfRepository
 
   Future<void> close() async {
     await _coverQueue;
+    await _coverExtractionQueue;
     await _queue;
+    await _locationQueue;
     _progressNotificationTimer?.cancel();
     await _contentChanges.close();
     await _progressChanges.close();

@@ -62,6 +62,13 @@ List<int> paginateCoverChapter(BookChapter chapter) {
   return starts;
 }
 
+/// Batches the work into one isolate message for an entire book. Starting an
+/// isolate per chapter is disproportionately expensive for books with many
+/// short chapters.
+List<List<int>> paginateCoverChapters(List<BookChapter> chapters) => [
+  for (final chapter in chapters) paginateCoverChapter(chapter),
+];
+
 abstract interface class BookCoverPaginationRepository {
   Future<BookCoverPagination> loadCoverPagination(String bookId);
 }
