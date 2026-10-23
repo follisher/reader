@@ -1,16 +1,24 @@
 # Reader
 
-`reader` 是一个可独立维护的 Flutter 阅读模块，提供本地 EPUB/TXT 书架、阅读器和阅读进度管理。它不负责应用路由、账号、下载或授权，宿主应用决定这些部分如何实现。
+本地离线阅读：提供书架、分类目录、阅读器和阅读数据持久化。
 
-## 目录与定位
+支持导入或内置 **TXT、Markdown（`.md`）、EPUB 与 PDF**。PDF 阅读仅在 Android/iOS 可用；其余三种格式可使用文本阅读器，EPUB 在 Android/iOS 会使用 Readium 原生阅读器。
 
-模块独立位于：
+## 功能概览
 
-```text
-/Users/bo/Documents/blindness/reader
-```
+- 本地书架：分类视图/网格视图、搜索、封面、阅读进度、阅读便签与长按移除。
+- 导入：可多选导入 UTF-8 TXT、Markdown、EPUB、PDF；SHA-256 自动去重，保留用户原文件不变。
+- 内置目录：由宿主以 Dart `BookCatalog` 声明书籍、标签和可选排版文件；可按标签查询或监听图书变化。
+- TXT 与 Markdown：TXT 自动识别常见中文章节和 `Chapter N`；Markdown 使用 GitHub Flavored Markdown 解析并按标题建立章节。
+- EPUB：读取元数据、封面、目录、正文和内嵌图片；Android/iOS 支持横向分页或纵向连续阅读、目录、书签、划线、评论、复制、搜索、分享及位置恢复。
+- PDF：Android/iOS 支持原生渲染、目录跳转、进度跳转、书签、上下/左右滚动及阅读位置恢复。
+- 文本阅读：连续滚动、平移/覆盖/仿真等翻页模式、字体/行距/段落/纸张/亮度设置、自动阅读、书签、划线、评论、复制、搜索、分享和进度恢复。
+- 阅读摘录：跨书集中查看划线与评论，支持搜索、按书筛选、排序、随机回顾、复制、删除和跳回原文。
+- 数据与性能：书籍副本、缓存、进度、设置和笔记存入应用私有目录；章节按需加载，解析在后台 isolate 执行。
 
-可以在此目录单独初始化 Git 仓库。主应用通过本地路径依赖它：
+## 快速接入
+
+在宿主的 `pubspec.yaml` 中使用本地路径依赖：
 
 ```yaml
 dependencies:
@@ -18,111 +26,22 @@ dependencies:
     path: ../reader
 ```
 
-## 已实现能力
-
-- 分类单行横向滚动书架、整页纵向滚动、书名/作者筛选、封面阅读便签、阅读进度与长按移除确认。
-- 跨书摘录流集中展示划线和评论，支持搜索、按书筛选、排序、随机回顾、复制、删除及跳回原文。
-- 多选导入本地 UTF-8 TXT 和 EPUB 文件。
-- EPUB 元数据、spine 章节顺序、正文与内嵌位图读取；书架会显示 EPUB 声明的封面，没有封面时使用默认图标。
-- TXT 常见中文章节名与 `Chapter N` 识别；无章节文本自动分段。
-- 默认采用 `flutter_book_reader`：上下连续滚动、真实分页、平移/覆盖/仿真/无动画切页。
-- 全屏沉浸阅读，轻点正文中间唤起菜单；设置中切换翻页模式、字号、行距、纸张主题与亮度蒙层。
-- 自动翻页及速度调节；连续滚动模式自动滚动，进入后台停止自动阅读。
-- 本地章节缓存分文件保存，阅读时仅加载清单及当前/相邻章节。导入和旧缓存升级仍需完整解析一次。
-- Android/iOS 的本地 EPUB 默认使用 Readium 图文阅读，复用 TXT 的菜单、设置面板、评论输入和分享卡片。桌面平台及自定义文本源沿用文本引擎，不再提供旧的“图文阅读”切换入口。
-- EPUB 阅读设置支持左右正文分页和上下无缝滚动。上下模式使用同一个按段落懒渲染的滚动容器，提前加载相邻章节与图片尺寸，章节交界无需松手或切换页面。左右模式继续使用 Readium 原生分页；两种模式共享章节、段落/DOM 锚点与笔记。
-- EPUB 保留原文卷、章、节标题层级；正文开头已有对应标题时不额外补同名标题，缺失时才补充。原书目录层级保持不变，缺少子目录时按正文标题级别推导。
-- 新阅读页保存章节与字符位置，400ms 防抖，退出/后台立即提交；旧段落位置自动转换。图文页沿用段落位置及 700ms 防抖。
-- SHA-256 去重。导入结果会区分新增图书与已合并的重复文件；图书副本、书架、进度和设置均保存在应用私有目录，不会修改用户原文件。
-
-书架文件默认存于 `Application Support/reader`。曾使用旧目录名的版本会在首次打开时自动迁移书架数据。
-
-## 接入宿主应用
-
-在应用启动时创建一个共享仓库，并将它注入根 `ProviderContainer`。这样书架页面与阅读页始终使用同一份状态和数据库。
+启动时创建仓库，并在根 `ProviderScope` 注入：
 
 ```dart
-final readerRepository = await LocalBookshelfRepository.create();
+final repository = await LocalBookshelfRepository.create();
 
-final container = ProviderContainer(
-  overrides: [
-    bookshelfRepositoryProvider.overrideWithValue(readerRepository),
-  ],
-);
-
-runApp(UncontrolledProviderScope(container: container, child: const MyApp()));
-```
-
-书架和阅读页由宿主控制导航：
-
-```dart
-BookshelfView(
-  onBookTap: (book) {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => ReaderView(book: book)),
-    );
-  },
-  onReaderOpen: (request) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ReaderView(
-          book: request.book,
-          initialChapter: request.chapterIndex,
-          initialCharOffset: request.charOffset,
-          initialAnchor: request.anchor,
-        ),
-      ),
-    );
-  },
-)
-```
-
-`onReaderOpen` 按书籍格式定位：TXT 使用章节字符位置，EPUB 使用 `anchor`，没有 `anchor` 的旧摘录恢复到对应章节。它是可选回调；不传时摘录卡片会回退到 `onBookTap`，只能打开书籍而不能保证定位到该条摘录。
-
-应用退出前或根容器释放后，调用 `readerRepository.close()` 关闭数据库。
-
-## 添加图书
-
-`BookshelfView` 内置本地文件选择与导入入口。若宿主使用资源文件或后续的下载服务，统一将获得的字节交给仓库：
-
-```dart
-// 已从 AssetBundle 读取，或已完成网络下载与完整性校验。
-await repository.importBytes(
-  bytes,
-  'book.epub',
-  source: BookSource.downloaded,
+runApp(
+  ProviderScope(
+    overrides: [
+      bookshelfRepositoryProvider.overrideWithValue(repository),
+    ],
+    child: const MyApp(),
+  ),
 );
 ```
 
-`BookSource` 已预留 `builtIn`、`imported` 和 `downloaded`。模块当前不发网络请求，也不保存账号或授权状态。
-
-### 分类查询与正文跳转
-
-主应用可以在未打开书架时读取某个分类。入口会先同步内置书籍，再查询本地书架；查询包含该标签下的内置、导入和下载图书，不包含已移除的书。读取或导入失败会抛出异常，调用方可显示重试。
-
-```dart
-final library = ref.read(readerLibraryProvider);
-final books = await library.loadBooksByTags(
-  BookTagsQuery(tags: [AppBookTags.fortune]), // 命理
-);
-
-// 点击查询结果直接打开正文，恢复阅读进度。
-await openReader(context, book: books.first);
-```
-
-实际列表需处理空结果后再取书籍。`openReader` 接收列表返回的 `Book`，无需自行拼接书名、文件路径或 ID；context 需位于已注入仓库的 ProviderScope 和 Navigator 内。该方法将当前仓库传入阅读页，支持局部 ProviderScope。宿主若使用自己的路由系统，也可直接构建 `ReaderView(book: book)`。
-
-标签由主仓库定义为 `CatalogTag` 常量（下文的 `AppBookTags`）。清单和查询共用这些常量，无需在 reader 中添加枚举，也不用在调用处手写标签名称。多个标签默认要求全部匹配；传 `match: BookTagMatch.any` 可改为任一匹配，空标签返回全部图书。
-
-需要自动更新的页面使用：
-
-```dart
-final books = ref.watch(booksByTagsProvider(
-  BookTagsQuery(tags: [AppBookTags.fortune, AppBookTags.ancient]),
-)); // AsyncValue<List<Book>>：处理 loading/error/data
-```
-
-书架的两个回调也可直接使用统一导航入口：
+书架和阅读页的导航由宿主控制：
 
 ```dart
 BookshelfView(
@@ -131,17 +50,11 @@ BookshelfView(
 )
 ```
 
-### 跟随主应用夜间模式
+`onReaderOpen` 用于从书签、划线和评论精确回到原文；应原样传递 `ReaderOpenRequest`。应用退出时调用 `await repository.close()`。
 
-`ReaderView`、`openReader` 和 `openReaderRequest` 的文本阅读默认跟随主应用 `Theme.of(context).brightness`：应用夜间模式使用深色正文，返回日间模式恢复阅读器保存的日间纸张主题（若原先保存的是夜间主题则使用白色）。文本阅读会跟随系统主题变化。应用模式不会覆盖保存的纸张偏好、字号和阅读位置。
+### 主题与封面复用
 
-阅读器菜单仍可手动调整文本阅读主题；后续主应用明暗模式变化或重新打开正文时重新跟随。
-
-文本阅读入口默认跟随，不需要修改主仓库调用方式。若某个场景需要独立阅读主题，可显式设置 `followHostTheme: false`，Widget 和统一导航方法都支持。
-
-### 外部使用书籍封面
-
-`BookCover` 复用书架的封面样式，默认不显示分类标签、阅读便签和进度，不需要注入仓库。传入查询得到的 `Book` 即可：
+`ReaderView`、`openReader` 和 `openReaderRequest` 默认跟随 `Theme.of(context).brightness`；需要阅读器独立主题时传入 `followHostTheme: false`。`BookCover` 可在宿主的其他列表中复用书架封面样式，无需注入仓库：
 
 ```dart
 BookCover(
@@ -150,163 +63,105 @@ BookCover(
 )
 ```
 
-默认正面宽 110、高 162，整体宽度额外包含按页数计算的纸页厚度；父级 `SizedBox` 或 `FittedBox` 可以调整大小。封面统一显示线装纸签和分类印章，已有封面图片作为底纹。`onTap`、`onLongPress` 可选；书架通过 `showProgress: true` 和 `markers` 保留原有进度与便签展示。
+## 内置书籍与分类
 
-### Dart 内置目录
-
-书籍目录和标签全部由主仓库维护，reader 只提供模型和查询接口（完整示例见 `example/lib/catalog.dart`）。在主仓库维护 `lib/pages/books/catalog.dart`：
+在宿主维护书籍清单并注入 `readerCatalogProvider`。未注入时不会导入任何内置资源。
 
 ```dart
-import 'package:reader/reader.dart';
-
 abstract final class AppBookTags {
   static const classic = CatalogTag(name: '经典', color: '#7C3AED');
-  static const fortune = CatalogTag(name: '命理', color: '#2563EB');
-  static const ancient = CatalogTag(name: '古籍', color: '#9C8F7D');
-  // 新增标签只需在主仓库继续定义常量。
   static const history = CatalogTag(name: '历史', color: '#57715D');
 }
 
 const catalog = BookCatalog(books: [
   CatalogBook(
-    assetPath: 'assets/books/紫微斗數全書卷一.txt',
-    tags: [AppBookTags.classic, AppBookTags.fortune, AppBookTags.ancient],
+    assetPath: 'assets/books/example.md',
+    tags: [AppBookTags.classic],
+    // 可选：为 TXT/Markdown 提供排版与目录数据。
+    layoutAssetPath: 'assets/books/example.layout.json',
   ),
 ]);
 
-// 与 bookshelfRepositoryProvider 一起注入根作用域。
-readerCatalogProvider.overrideWithValue(catalog)
+ProviderScope(
+  overrides: [
+    readerCatalogProvider.overrideWithValue(catalog),
+  ],
+  child: const MyApp(),
+)
 ```
 
-图书资源仍需在宿主 `pubspec.yaml` 声明。通过 `readerCatalogProvider` 注入 Dart 清单；不注入时不导入任何内置资源。模块不再读取 `catalog.json` 或扫描资源目录。主仓库已迁移为 `lib/pages/books/catalog.dart`，并在根 ProviderContainer 注入。目录同步会保留阅读进度和笔记，已移除的内置书籍不会自动恢复。
+同时在宿主 `pubspec.yaml` 声明资源目录。标签名称是持久化唯一标识：同名标签应复用同一常量，且颜色声明必须一致。
 
-以后新增书籍，只需在主仓库加入资源文件并将 `CatalogBook` 加入清单；新增标签，只需在主仓库定义新的 `CatalogTag` 常量并在对应书籍的 `tags` 中引用。目录与查询页面都导入这一个文件，不需要修改 reader。新增资源目录仍需在主仓库 `pubspec.yaml` 声明；如果已有 `assets/books/` 声明，往该目录增加文件无需逐一登记。
+按标签读取图书：
 
-标签名称是唯一标识，与现有 SQLite 标签关系兼容。同名常量视为同一标签；名称不能为空或带首尾空白，同名标签的颜色声明须一致，重复书籍资源路径也会在导入前报错。改标签显示名称视为更换标签，需同时更新主仓库中共用的常量；下次启动会同步新关系。
+```dart
+final library = ref.read(readerLibraryProvider);
+final books = await library.loadBooksByTags(
+  BookTagsQuery(tags: [AppBookTags.classic]),
+);
 
-若不使用 Riverpod，可创建 `ReaderLibrary(repository: repository, catalog: catalog)` 并调用相同方法。一个仓库复用一个实例；`initialize()` 可在启动时调用，同一实例的并发初始化共享任务，失败后可重试。修改目录后重新启动应用即可同步。
+final watched = ref.watch(booksByTagsProvider(
+  BookTagsQuery(
+    tags: [AppBookTags.classic, AppBookTags.history],
+    match: BookTagMatch.any,
+  ),
+));
+```
 
-## 文件与安全边界
+多个标签默认要求全部匹配；`BookTagMatch.any` 表示匹配任意一个；空标签查询全部图书。
 
-单个图书限制为 50 MB；EPUB 最多 10,000 个资源，声明的解压内容限制为 150 MB。解析在后台 isolate 中进行。EPUB 会移除脚本、嵌入式框架、外部链接与外部资源引用，不执行书内代码。
+## 导入与外部内容
 
-当前版本将普通 EPUB/TXT 副本及书签、划线、评论保存在应用沙盒中。它不提供 DRM、图书加密、密钥授权、账号或云同步。未来接入加密内容时，应通过 `BookContent` 接口按章提供已解密内容，避免将整本明文写入磁盘。
+`BookshelfView` 已包含文件选择和导入入口。通过下载或资源文件取得字节时，也可直接导入：
 
-本模块不是完整的 EPUB 排版引擎：不支持复杂外部 CSS、固定版式、音视频、DRM；SVG 图片可能无法显示。桌面平台的文本阅读不会呈现原书图片和富文本样式。TXT 需要 UTF-8 编码，GBK/UTF-16 文件应先转换。
+```dart
+await repository.importBytes(
+  bytes,
+  'book.epub',
+  source: BookSource.downloaded,
+);
+```
 
-## 独立演示
+`BookSource` 支持 `builtIn`、`imported` 和 `downloaded`。模块不发起网络请求，也不保存账号或授权状态。
 
-演示工程在 `example/`。首次打开会安装一份原创示例文本。
+需要接入远程或加密章节时，可实现 `flutter_book_reader` 的 `BookSource` 并传给 `ReaderView`；大型内容建议实现 `OnDemandBookContent`，按章加载：
+
+```dart
+ReaderView(
+  key: const ValueKey('remote-book'),
+  book: shelfBook,
+  source: remoteSource,
+  controller: BookReaderController(),
+)
+```
+
+更换书籍或数据源时请使用新的 Widget key。自定义文本源使用文本阅读器；本地 EPUB/PDF 的原生阅读要求仓库实现 `PublicationFileRepository`，`LocalBookshelfRepository` 已实现。
+
+## 平台与安全边界
+
+- Flutter >= 3.44.4，Dart >= 3.10.0 < 4.0.0。
+- Android/iOS：EPUB 与 PDF 使用 Readium；iOS 最低版本为 15.0，Android 最低 minSdk 为 24。Android 还需启用 core-library desugaring。具体 Pod 与 Gradle 配置可参考 `example/`。
+- 桌面平台：PDF 会显示不可用提示；EPUB 回退为文本阅读路径，富文本和图片呈现能力受限。
+- 单个文件上限 50 MB；EPUB 最多 10,000 个资源、声明解压体积上限 150 MB。TXT 和 Markdown 必须为 UTF-8。
+- Markdown 导入会移除脚本、事件属性和不安全资源；EPUB 离线解析路径会清理脚本、嵌入框架与外部资源。Readium 对原始 EPUB 的资源和链接策略应由宿主按产品安全要求验证。
+- 不提供 DRM、图书加密、密钥授权或云同步；不支持固定版式 EPUB、音视频及复杂 CSS 的完整还原。
+
+## 示例与开发
+
+示例工程位于 `example/`，包含 TXT、Markdown、EPUB 和 PDF 样例：
 
 ```sh
-cd /Users/bo/Documents/blindness/reader/example
+cd example
 flutter pub get
 flutter run
 ```
 
-Android 示例使用 `com.example.reader_example`，不会覆盖主应用。
-
-## 开发与验证
+在模块根目录进行验证：
 
 ```sh
-cd /Users/bo/Documents/blindness/reader
 flutter pub get
 flutter analyze
 flutter test
 ```
 
-测试覆盖 EPUB/TXT 解析、无效文件、路径限制、去重、重启后的进度和设置、书架筛选、阅读位置恢复及阅读器设置。
-
-模块要求 Dart `>=3.10.0 <4.0.0`，并使用 Flutter、Riverpod 和 SQLite。当前主应用使用 `reader: path: ../reader` 引入该模块。
-
-## 可替换阅读数据源
-
-默认 `ReaderView(book: book)` 使用 `RepositoryBookSource`。外部章节数据可以直接实现三方库的 `BookSource`，保持一个稳定实例传入：
-
-```dart
-import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
-
-// remoteSource 是宿主实现的 engine.BookSource 实例。
-final controller = engine.BookReaderController();
-
-ReaderView(book: shelfBook, source: remoteSource, controller: controller);
-```
-
-数据源需要实现 `loadManifest()` 和 `loadChapterBody(int index)`，正文用换行分段。`BookReaderController` 可控制翻页、切章和自动阅读。宿主更换书籍或数据源时应使用新的 Widget key。自定义源的进度按引擎字符坐标保存；本地源额外做段落与缩进转换。图文入口仅适用于默认本地源。
-
-`BookContent` 仍可使用内存章节；大型/远程内容实现 `OnDemandBookContent`，让 `chapters` 只返回元数据，通过 `loadChapter(index)` 读取正文。调用方统一使用 `content.readChapter(index)`，不要依赖缓存对象的 `chapters[i].blocks` 已经加载。
-
-数据库当前为 v10，新增 `anchor_json` 保存完整 EPUB Locator。升级保留原书架、阅读进度、设置和 `reader_notes` payload。章节缓存仍为 v2，原始图书副本仍保留。新笔记使用独立 ID 和 `anchor`，旧文本坐标笔记继续保留；EPUB 旧笔记恢复到对应章节，新笔记从摘录流跳回 EPUB 选区；不会因旧字符偏移切换到文本阅读器。宿主的 `onReaderOpen` 必须传递 `request.anchor`（见上例）。
-
-## Readium 宿主配置
-
-要求 Flutter >= 3.44.4。Android 宿主需要 `FlutterFragmentActivity`、minSdk >= 24，以及 `compileOptions.isCoreLibraryDesugaringEnabled = true` 和 `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")`。示例工程已配置。iOS 要求 15.0；CocoaPods 配置可参考 `example/ios/Podfile`，Readium pods 使用 3.11.x。宿主 `ios/Podfile` 必须显式配置 Readium 的专用源；插件 podspec 中的 `s.source` 不会注册依赖源：
-
-```ruby
-source 'https://github.com/readium/podspecs'
-source 'https://cdn.cocoapods.org/'
-platform :ios, '15.0'
-```
-
-在宿主 `ios` 目录运行 `pod install`。已有 Readium specs 缓存需要刷新时运行 `pod install --repo-update`。
-
-`ReaderView` 会自动分流。自定义仓库还需实现 `PublicationFileRepository.publicationPath`，返回本地原始 EPUB 路径。传入文本 `source` 或 `BookReaderController` 时保留自定义文本引擎。旧的 `HtmlReaderView` 与 `useLegacyTextReader` 入口已移除。Readium 当前是单出版物会话，不能同时打开两个 EPUB 页面；适配器会阻止第二个会话覆盖第一个。
-
-EPUB 支持选区复制、划线、评论、查询、分享卡片、书签、笔记删除/跳转和 Locator 恢复。横向分页使用原生选区，纵向使用连续正文选区并保留原文 DOM 地址。横向分页/纵向滚动单独记忆，不覆盖 TXT 的仿真翻页偏好。自动阅读与 TXT 共用底部入口及“慢—快 / 退出自动阅读”面板，不显示秒数。横向按速度自动翻页并显示计时进度，纵向持续匀速滚动；打开面板或菜单时暂停，关闭后等待布局稳定再继续，触摸正文临时暂停，后台及全书末尾停止。仿真卷页尚未实现。评论使用正文高亮，点击高亮文字打开评论弹窗；TXT 与 EPUB 均不显示段尾评论气泡。目录保留原书顺序，进度滑块按章节等权跳转。没有 Locator 的旧进度首次打开图文页恢复到对应章节；旧字符偏移不能保证映射到原 EPUB 的精确文字。
-
-横向 Readium 读取原始 EPUB，原文本解析器的 HTML 清理不作用于这个渲染路径。纵向连续正文使用离线清理后的 HTML 与本地图片，复杂原书 CSS 的呈现可能与横向模式不同。前文关于禁用书内脚本及外部资源的描述适用于离线解析器，不能作为 Readium 路径的安全保证。书籍内容的资源与链接策略需按宿主应用要求配置并验证。
-
-正文支持长按划线、评论、复制、浏览器查询（百度）和系统文字分享。评论输入层保存后刷新正文高亮，点击高亮文字可查看和删除评论；目录中的笔记支持查看、定位和删除。书签、划线、评论均存入本地 `reader.sqlite`，重开阅读器后恢复，移除图书时一起清理。写入失败保留当前会话的数据并显示重试入口；评论输入框保留草稿。首次读取失败会显示打开失败，避免用空数据覆盖已有笔记。
-
-自定义 `BookshelfRepository` 需实现 `loadNotes` / `saveNotes`，后者按书籍和 `ReaderNoteKind` 原子替换列表。若同时实现可选的 `BookshelfInsightsRepository`，书架会使用批量聚合、实时摘录流与精确单条删除；未实现时自动回退到基础仓库接口。自定义章节源也使用书架 `book.id` 保存笔记，需保证书籍 ID、章节顺序及正文稳定。锚点使用引擎字符坐标，当前固定首行缩进为 2；字号和翻页模式变化不会改变坐标。连续滚动模式的选区限于单段；EPUB 批注使用独立的 Locator 锚点。
-
-自动阅读没有接入屏幕常亮插件。Android 系统版本/宿主 target SDK 可能限制隐藏系统栏，沉浸模式需在宿主真机验证。新增原生插件后需完整重启宿主应用，热重载无法注册分享和浏览器插件。
-
-### 阅读引擎维护
-
-`third_party/flutter_book_reader` 是 1.5.13 的项目内 MIT 许可副本，保留原始许可证。已修补连续滚动的章内位置恢复/更新、加载后可见位置保持，以及控制器释放后的异步通知。升级时请对照 `LOCAL_CHANGES.md` 合并；不要直接修改全局 pub 缓存。连续滚动支持段内选中和批注，付费内容与章节附加组件尚不在此分支的支持范围内。
-
-### Markdown 阅读
-
-本地导入支持 UTF-8 `.md`，按标题生成章节目录。文字阅读会去掉 Markdown 语法标记，支持现有划线、批注、书签和阅读进度保存。单个 MD 文件不附带图片资源，图片以替代文字展示。文字阅读不保留代码缩进和表格布局。划线以解析后的章节及字符范围定位，修改原文或解析规则后不保证迁移。
-
-### 内置图书目录与排版配置
-
-`CatalogBook.layoutAssetPath` 可指定与原始文件 SHA-256 对应的目录配置。宿主的 `assets/books/book_layout_manifest.json` 保存逐本梳理的原文标题、层级和行号；编译后为每本书生成 `.layout.json`，书架同步时写入本地目录。文字阅读使用配置中的目录，原始文件、正文和已有划线、批注与阅读位置沿用原坐标。
-
-修改原书或目录后，先复核清单中的原文行号与标题，再运行目录编译工具：
-
-```sh
-flutter test tool/compile_book_layouts.dart \
-  --dart-define=BOOK_DRAFTS=../blindness/assets/books/book_layout_manifest.json \
-  --dart-define=BOOK_ROOT=../blindness/assets/books \
-  --dart-define=BOOK_REPORT=book_layout_report.json
-```
-
-完整语料验证：
-
-```sh
-flutter test test/book_layout_corpus_test.dart \
-  --dart-define=READER_BOOKS_DIRECTORY=../blindness/assets/books
-```
-
-目录改动只更新配置。更改原始文件会得到新的书籍 ID，旧阅读数据不会自动迁移；不要用整理副本直接覆盖原书以更新已有书架。无正文的缺卷、缺图与待校勘文字不补造。
-
-### 封面纸层与便签
-
-书架与命盘图书列表使用 `RepositoryBookCover`。`BookCover` 仍支持独立使用，传入
-`BookCoverPagination` 才显示有准确页位置的便签。分页尚未完成时只显示纸边。
-
-封面采用独立的固定版本：每行 20 个全角字、每页 24 行、段首缩进 2 字，每章第一页预留
-2 行标题。中英文按固定字格计算，不跟随阅读字号或设备变化，页码也不等于阅读器当前页码。
-原文和阅读笔记不修改；按笔记原始 UTF-16 坐标定位，标签横向锚定对应纸层，同页笔记合并。
-
-厚度按固定分页的总页数计算，每页厚度与间距各 0.1 逻辑像素；厚书按原有上限压缩厚度。
-图书占用宽度为封面宽度加纸页厚度，厚度最小 3 逻辑像素，保留原有最大上限。
-纸面保留顶部透视、渐变阴影与划线页位置；书架按分类分行，分类标题位于左上方；每行图书保持固定间距并横向滚动，整页纵向滚动。
-用最多 32 条装饰纹理模拟分页，不再逐页绘制；使用 RepaintBoundary 隔离。首次分页逐章后台计算，
-后续复用内存及 `cache/<bookId>/cover_pages.json` 缓存；缓存可重建，不需要导出。
-
-书架默认选中分类视图。底部二级导航提供分类长条图标与四方块网格图标，
-宿主通过 `layoutControlsBuilder` 使用共享分段导航。网格模式自动换行，
-仅显示最小 3 像素纸页厚度，不显示阅读便签；切换模式不改动笔记与阅读进度。
+测试覆盖格式解析与导入、目录与封面、阅读位置、笔记和摘录、EPUB 连续阅读与选区、PDF 导航，以及书架和阅读器交互。

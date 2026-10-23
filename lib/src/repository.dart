@@ -158,7 +158,15 @@ class LocalBookshelfRepository
   final Directory directory;
   final Database _db;
   final BookParser parser;
-  final _changes = StreamController<void>.broadcast();
+
+  /// Changes that can alter the shelf's content or note aggregates.
+  final _contentChanges = StreamController<void>.broadcast();
+
+  /// Reading positions are deliberately separate from content changes: they
+  /// only affect book metadata, while notes and excerpts remain unchanged.
+  final _progressChanges = StreamController<void>.broadcast();
+  Timer? _progressNotificationTimer;
+  bool _progressNotificationPending = false;
   final _memoryCache = <String, BookContent>{};
   final _openingBooks = <String, Future<BookContent>>{};
   final _layouts = <String, Future<BookLayout?>>{};
@@ -489,7 +497,7 @@ class LocalBookshelfRepository
         }
         await batch.commit(noResult: true);
       }),
-    ).then((_) => _changes.add(null));
+    ).then((_) => _notifyContentChanges());
   }
 
   static Future<Directory> _defaultDirectory() async {
@@ -543,14 +551,29 @@ class LocalBookshelfRepository
     return result;
   }
 
-  void _notifyChanges() {
-    if (_changes.isClosed) return;
+  void _notifyContentChanges() {
+    if (_contentChanges.isClosed) return;
     try {
-      _changes.add(null);
+      _contentChanges.add(null);
     } catch (_) {
       // Persistence has already completed. A disposed observer must not make
       // the caller believe that its write failed.
     }
+  }
+
+  /// Batches frequent reader writes into at most one shelf refresh per
+  /// second. The database still receives the latest requested position, so a
+  /// reader can safely resume even while the shelf UI update is deferred.
+  void _notifyProgressChanged() {
+    if (_progressChanges.isClosed) return;
+    _progressNotificationPending = true;
+    if (_progressNotificationTimer != null) return;
+    _progressNotificationTimer = Timer(const Duration(seconds: 1), () {
+      _progressNotificationTimer = null;
+      if (!_progressNotificationPending || _progressChanges.isClosed) return;
+      _progressNotificationPending = false;
+      _progressChanges.add(null);
+    });
   }
 
   Book _book(Map<String, Object?> row) => Book(
@@ -619,7 +642,8 @@ class LocalBookshelfRepository
   @override
   Stream<List<Book>> watchBooks() {
     late StreamController<List<Book>> controller;
-    StreamSubscription<void>? subscription;
+    StreamSubscription<void>? contentSubscription;
+    StreamSubscription<void>? progressSubscription;
     Future<void> pending = Future.value();
     void refresh() {
       pending = pending.then((_) async {
@@ -642,11 +666,13 @@ class LocalBookshelfRepository
 
     controller = StreamController<List<Book>>(
       onListen: () {
-        subscription = _changes.stream.listen((_) => refresh());
+        contentSubscription = _contentChanges.stream.listen((_) => refresh());
+        progressSubscription = _progressChanges.stream.listen((_) => refresh());
         refresh();
       },
       onCancel: () async {
-        await subscription?.cancel();
+        await contentSubscription?.cancel();
+        await progressSubscription?.cancel();
       },
     );
     return controller.stream;
@@ -665,8 +691,11 @@ class LocalBookshelfRepository
   @override
   Stream<List<ShelfEntry>> watchShelfEntries() {
     late StreamController<List<ShelfEntry>> controller;
-    StreamSubscription<void>? subscription;
+    StreamSubscription<void>? contentSubscription;
+    StreamSubscription<void>? progressSubscription;
     Future<void> pending = Future<void>.value();
+    var entries = const <ShelfEntry>[];
+    var hasEntries = false;
     void refresh() {
       pending = pending.then((_) async {
         try {
@@ -704,15 +733,41 @@ class LocalBookshelfRepository
             }
           }
           if (!controller.isClosed) {
-            controller.add([
+            entries = [
               for (final book in books)
                 ShelfEntry(
                   book: book,
                   noteCount: counts[book.id] ?? 0,
                   markers: List.unmodifiable(markers[book.id] ?? const []),
                 ),
-            ]);
+            ];
+            hasEntries = true;
+            controller.add(entries);
           }
+        } catch (error, stack) {
+          if (!controller.isClosed) controller.addError(error, stack);
+        }
+      });
+    }
+
+    // A position change only needs fresh book rows (progress and ordering).
+    // Keep the already-loaded note aggregation instead of querying every
+    // reader note again.
+    void refreshProgress() {
+      pending = pending.then((_) async {
+        if (!hasEntries) return;
+        try {
+          final previous = {for (final entry in entries) entry.book.id: entry};
+          final books = await _loadBooksForShelf();
+          entries = [
+            for (final book in books)
+              ShelfEntry(
+                book: book,
+                noteCount: previous[book.id]?.noteCount ?? 0,
+                markers: previous[book.id]?.markers ?? const [],
+              ),
+          ];
+          if (!controller.isClosed) controller.add(entries);
         } catch (error, stack) {
           if (!controller.isClosed) controller.addError(error, stack);
         }
@@ -721,10 +776,16 @@ class LocalBookshelfRepository
 
     controller = StreamController<List<ShelfEntry>>(
       onListen: () {
-        subscription = _changes.stream.listen((_) => refresh());
+        contentSubscription = _contentChanges.stream.listen((_) => refresh());
+        progressSubscription = _progressChanges.stream.listen(
+          (_) => refreshProgress(),
+        );
         refresh();
       },
-      onCancel: () async => subscription?.cancel(),
+      onCancel: () async {
+        await contentSubscription?.cancel();
+        await progressSubscription?.cancel();
+      },
     );
     return controller.stream;
   }
@@ -794,7 +855,7 @@ class LocalBookshelfRepository
 
     controller = StreamController<List<ExcerptItem>>(
       onListen: () {
-        subscription = _changes.stream.listen((_) => refresh());
+        subscription = _contentChanges.stream.listen((_) => refresh());
         refresh();
       },
       onCancel: () async => subscription?.cancel(),
@@ -809,7 +870,7 @@ class LocalBookshelfRepository
       where: 'book_id = ? AND kind = ? AND note_key = ?',
       whereArgs: [ref.bookId, ref.kind.name, ref.noteKey],
     );
-    _changes.add(null);
+    _notifyContentChanges();
   });
 
   Future<BookContent> _parse(Uint8List bytes, String name) =>
@@ -918,7 +979,7 @@ class LocalBookshelfRepository
         'is_hidden': 0,
       };
       await _db.insert('books', row);
-      _changes.add(null);
+      _notifyContentChanges();
       return BookImportResult(book: _book(row), isDuplicate: false);
     } catch (_) {
       if (await temporary.exists()) await temporary.delete();
@@ -962,7 +1023,7 @@ class LocalBookshelfRepository
           where: 'id = ?',
           whereArgs: [book.id],
         );
-        _changes.add(null);
+        _notifyContentChanges();
       }
       return _withLayout(book, cached);
     }
@@ -984,7 +1045,7 @@ class LocalBookshelfRepository
         where: 'id = ?',
         whereArgs: [book.id],
       );
-      _changes.add(null);
+      _notifyContentChanges();
     }
     final rebuilt = await _readCache(book.id, book: book);
     final result = rebuilt != null && correctTitle(rebuilt) ? rebuilt : content;
@@ -1043,7 +1104,7 @@ class LocalBookshelfRepository
           where: 'id = ? AND is_hidden = 0',
           whereArgs: [bookId],
         );
-        _changes.add(null);
+        _notifyProgressChanged();
       });
 
   @override
@@ -1081,7 +1142,7 @@ class LocalBookshelfRepository
     _openingBooks.remove(bookId);
     _layouts.remove(bookId);
     _coverPagination.remove(bookId);
-    _notifyChanges();
+    _notifyContentChanges();
     try {
       final file = File(p.join(directory.path, row['file_name'] as String));
       if (await file.exists()) await file.delete();
@@ -1188,7 +1249,7 @@ class LocalBookshelfRepository
             }
           }
         });
-        _changes.add(null);
+        _notifyContentChanges();
       });
 
   Future<void> _cachePendingCovers() => _serial(() async {
@@ -1399,7 +1460,9 @@ class LocalBookshelfRepository
   Future<void> close() async {
     await _coverQueue;
     await _queue;
-    await _changes.close();
+    _progressNotificationTimer?.cancel();
+    await _contentChanges.close();
+    await _progressChanges.close();
     await _db.close();
   }
 }

@@ -1620,7 +1620,7 @@ class _ShelfEmpty extends StatelessWidget {
           ),
           if (allEmpty) ...[
             const SizedBox(height: 12),
-            const Text('支持导入 UTF-8 TXT / EPUB 和 Markdown，导入后可离线阅读'),
+            const Text('支持导入 UTF-8 TXT / EPUB / PDF 和 Markdown，导入后可离线阅读'),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: busy ? null : onImport,

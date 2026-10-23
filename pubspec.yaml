@@ -1,5 +1,5 @@
 name: reader
-description: Reusable EPUB and TXT bookshelf and reader.
+description: Reusable bookshelf and reader.
 version: 0.1.0
 publish_to: none
 environment:
