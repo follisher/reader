@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-enum BookFormat { txt, epub, md }
+enum BookFormat { txt, epub, md, pdf }
 
 enum BookSource { imported, builtIn, downloaded }
 
@@ -53,6 +53,9 @@ class ReaderSettings {
     this.dimLevel = 0,
     this.fontFamily,
     this.epubScroll = true,
+    this.pdfLayout = 'scrollHorizontal',
+    this.pdfFit = 'width',
+    this.pdfPageSpacing = 8,
   });
   final double fontSize;
   final bool dark;
@@ -62,6 +65,8 @@ class ReaderSettings {
   final bool justify;
   final String? fontFamily;
   final bool epubScroll;
+  final String pdfLayout, pdfFit;
+  final double pdfPageSpacing;
 
   ReaderSettings copyWith({double? fontSize, bool? dark}) => ReaderSettings(
     fontSize: fontSize ?? this.fontSize,
@@ -75,6 +80,9 @@ class ReaderSettings {
     dimLevel: dimLevel,
     fontFamily: fontFamily,
     epubScroll: epubScroll,
+    pdfLayout: pdfLayout,
+    pdfFit: pdfFit,
+    pdfPageSpacing: pdfPageSpacing,
   );
 
   Map<String, Object?> toJson() => {
@@ -87,6 +95,9 @@ class ReaderSettings {
     'dimLevel': dimLevel,
     'fontFamily': fontFamily,
     'epubScroll': epubScroll,
+    'pdfLayout': pdfLayout,
+    'pdfFit': pdfFit,
+    'pdfPageSpacing': pdfPageSpacing,
   };
 }
 

@@ -33,8 +33,18 @@ class LocalBookParser implements BookParser {
     if (ext == '.txt') return _text(bytes, fileName);
     if (ext == '.md') return _markdown(bytes, fileName);
     if (ext == '.epub') return _epub(bytes, fileName);
-    throw const FormatException('目前支持 EPUB、TXT 和 Markdown（MD）文件');
+    // PDF rendering is delegated to the platform-native Readium navigator.
+    // Keep a tiny manifest only so importing and shelf metadata never need to
+    // rasterize or fully parse a potentially large PDF on the Dart isolate.
+    if (ext == '.pdf') return _pdf(fileName);
+    throw const FormatException('目前支持 EPUB、TXT、Markdown（MD）和 PDF 文件');
   }
+
+  BookContent _pdf(String fileName) => MemoryBookContent(
+    title: _decodeFileTitle(p.basenameWithoutExtension(fileName)),
+    author: '',
+    chapters: const [BookChapter(id: '0', title: 'PDF', blocks: [])],
+  );
 
   BookContent _text(Uint8List bytes, String fileName) {
     String text;

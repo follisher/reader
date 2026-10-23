@@ -2,6 +2,7 @@ import Flutter
 import Combine
 import UIKit
 import MediaPlayer
+import PDFKit
 import ReadiumNavigator
 import ReadiumShared
 
@@ -228,6 +229,43 @@ public class FlutterReadiumPlugin: NSObject, FlutterPlugin, ReadiumShared.Warnin
           await MainActor.run {
             result(err.toFlutterError())
           }
+        }
+      }
+    case "renderPdfCover":
+      let args = call.arguments as? [String: Any]
+      guard let path = args?["path"] as? String else {
+        result(nil)
+        return
+      }
+      let maxWidth = CGFloat((args?["maxWidth"] as? NSNumber)?.doubleValue ?? 360)
+      DispatchQueue.global(qos: .userInitiated).async {
+        guard let document = PDFDocument(url: URL(fileURLWithPath: path)),
+              let page = document.page(at: 0) else {
+          DispatchQueue.main.async { result(nil) }
+          return
+        }
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else {
+          DispatchQueue.main.async { result(nil) }
+          return
+        }
+        let scale = min(1, max(120, min(maxWidth, 720)) / bounds.width)
+        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        UIGraphicsBeginImageContextWithOptions(size, true, 1)
+        defer { UIGraphicsEndImageContext() }
+        guard let context = UIGraphicsGetCurrentContext() else {
+          DispatchQueue.main.async { result(nil) }
+          return
+        }
+        UIColor.white.setFill()
+        context.fill(CGRect(origin: .zero, size: size))
+        context.saveGState()
+        context.scaleBy(x: scale, y: scale)
+        page.draw(with: .mediaBox, to: context)
+        context.restoreGState()
+        let data = UIGraphicsGetImageFromCurrentImageContext()?.pngData()
+        DispatchQueue.main.async {
+          result(data.map { FlutterStandardTypedData(bytes: $0) })
         }
       }
     case "setCssInjections":

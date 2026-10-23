@@ -11,7 +11,7 @@ import 'progress/reader_progress_store.dart';
 /// 到 [isAtBookEnd] 即停止（章末会自动进入下一章）。
 ///
 /// 用法：创建一个实例传给 `BookReader(controller: ...)`，阅读器就绪后（[isReady]）即可调用。
-/// 它是一个 [ChangeNotifier]，翻页 / 切章时会通知监听者，便于同步外部 UI（如播放条）。
+/// 它是一个 [ChangeNotifier]，翻页模式 / 切章时会通知监听者，便于同步外部 UI（如播放条）。
 class BookReaderController extends ChangeNotifier {
   ReadingController? _rc;
   VoidCallback? _hideMenu;
@@ -91,7 +91,7 @@ class BookReaderController extends ChangeNotifier {
   /// 清除跟读高亮。
   void clearReading() => _clearReading?.call();
 
-  /// 当前页是否已加书签。翻页 / 切章或书签变化时本控制器会通知，宿主可据此刷新自定义 UI。
+  /// 当前页是否已加书签。翻页模式 / 切章或书签变化时本控制器会通知，宿主可据此刷新自定义 UI。
   bool get isCurrentPageBookmarked => _isBookmarkedFn?.call() ?? false;
 
   /// 编程式加 / 删当前页书签（等价于点顶栏书签按钮）。切换后会通知监听者。
@@ -153,7 +153,7 @@ class BookReaderController extends ChangeNotifier {
     _isBookmarkedFn = isBookmarked;
   }
 
-  /// 阅读器位置（翻页 / 切章）变化时转发一次通知，便于外部 UI 同步（BookReader 调用）。
+  /// 阅读器位置（翻页模式 / 切章）变化时转发一次通知，便于外部 UI 同步（BookReader 调用）。
   @internal
   void notifyPositionChanged() {
     if (_disposed) return;

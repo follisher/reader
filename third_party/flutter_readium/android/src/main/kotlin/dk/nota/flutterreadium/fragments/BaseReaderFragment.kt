@@ -19,7 +19,7 @@ abstract class BaseReaderFragment : Fragment() {
     var vm: ReaderViewModel? = null
     protected open var navigator: Navigator? = null
 
-    val currentLocator get() = navigator?.currentLocator
+    open val currentLocator get() = navigator?.currentLocator
 
     open fun go(
         locator: Locator?,

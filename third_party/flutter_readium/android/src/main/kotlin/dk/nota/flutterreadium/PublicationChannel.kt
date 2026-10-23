@@ -2,6 +2,10 @@
 
 package dk.nota.flutterreadium
 
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import dk.nota.flutterreadium.models.TextSearchResult
 import dk.nota.flutterreadium.navigators.AudioRecoveryPolicy
 import io.flutter.plugin.common.MethodCall
@@ -20,7 +24,9 @@ import org.readium.r2.shared.util.Try
 import org.readium.r2.shared.util.Url
 import org.readium.r2.shared.util.getOrElse
 import java.io.FileOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import kotlin.math.roundToInt
 
 private const val TAG = "PublicationChannel"
 
@@ -149,6 +155,15 @@ internal class PublicationMethodCallHandler : MethodChannel.MethodCallHandler {
                 val args = arguments as List<Any?>
                 val pubUrlStr = args[0] as String
                 return loadPublication(pubUrlStr)
+            }
+
+            "renderPdfCover" -> {
+                val args = arguments as? Map<*, *>
+                    ?: return Try.success(null)
+                val path = args["path"] as? String
+                    ?: return Try.success(null)
+                val maxWidth = (args["maxWidth"] as? Number)?.toInt() ?: 360
+                return Try.success(renderPdfCover(path, maxWidth))
             }
 
             "openPublication" -> {
@@ -559,6 +574,39 @@ internal class PublicationMethodCallHandler : MethodChannel.MethodCallHandler {
 
         ReadiumReader.audioEnable(locator, preferences)
         return Try.success(null)
+    }
+
+    /** Renders only the first PDF page for a compact bookshelf thumbnail. */
+    private fun renderPdfCover(path: String, requestedWidth: Int): ByteArray? {
+        val file = java.io.File(path)
+        if (!file.isFile) return null
+        val maxWidth = requestedWidth.coerceIn(120, 720)
+        return try {
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
+                PdfRenderer(descriptor).use { renderer ->
+                    if (renderer.pageCount == 0) return null
+                    renderer.openPage(0).use { page ->
+                        val scale = maxWidth.toFloat() / page.width.coerceAtLeast(1)
+                        val width = (page.width * scale).roundToInt().coerceAtLeast(1)
+                        val height = (page.height * scale).roundToInt().coerceAtLeast(1)
+                        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                        try {
+                            bitmap.eraseColor(Color.WHITE)
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            ByteArrayOutputStream().use { output ->
+                                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) return null
+                                output.toByteArray()
+                            }
+                        } finally {
+                            bitmap.recycle()
+                        }
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            PluginLog.w(TAG, "Unable to render PDF cover: ${error.message}")
+            null
+        }
     }
 }
 

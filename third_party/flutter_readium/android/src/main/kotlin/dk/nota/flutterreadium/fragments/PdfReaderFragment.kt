@@ -3,6 +3,13 @@ package dk.nota.flutterreadium.fragments
 import android.os.Bundle
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
+import com.github.barteksc.pdfviewer.PDFView
+import dk.nota.flutterreadium.pdfTargetPage
+import dk.nota.flutterreadium.pdfViewIndex
+import dk.nota.flutterreadium.pdfPageNumber
+import org.readium.r2.navigator.preferences.Axis
+import org.readium.r2.navigator.preferences.ReadingProgression
 import androidx.fragment.app.commitNow
 import androidx.lifecycle.lifecycleScope
 import dk.nota.flutterreadium.R
@@ -64,37 +71,83 @@ class PdfReaderFragment :
     private val pdfVm
         get() = vm as PdfReaderViewModel?
 
-    /**
-     * Synchronous wrappers around the navigator's `go*` methods so the
-     * surrounding [dk.nota.flutterreadium.navigators.PdfNavigator] can await
-     * fragment-startup before calling.
-     */
-    fun goBackward(animated: Boolean): Boolean {
-        val nav = pdfNavigator
-        if (nav == null) {
-            Log.d(TAG, "::goBackward - $instance - navigator not ready")
-            return false
+    private var pdfLocations: MutableStateFlow<Locator>? = null
+    override val currentLocator get() = pdfLocations ?: navigator?.currentLocator
+
+    private fun findPdfView(view: View?): PDFView? {
+        if (view is PDFView) return view
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                findPdfView(view.getChildAt(index))?.let { return it }
+            }
         }
-        return nav.goBackward(animated)
+        return null
     }
 
-    fun goForward(animated: Boolean): Boolean {
-        val nav = pdfNavigator
-        if (nav == null) {
-            Log.d(TAG, "::goForward - $instance - navigator not ready")
-            return false
-        }
-        return nav.goForward(animated)
+    private val pagesReversed: Boolean
+        get() = pdfVm?.preferences?.let {
+            it.scrollAxis == Axis.HORIZONTAL && it.readingProgression == ReadingProgression.RTL
+        } ?: false
+
+    override fun go(locator: Locator?, animated: Boolean): Boolean {
+        if (locator == null) return false
+        val page = pdfTargetPage(locator.locations.fragments, locator.locations.position)
+            ?: return super.go(locator, animated)
+        val view = findPdfView(pdfNavigator?.view) ?: return false
+        val index = pdfViewIndex(page, view.pageCount, pagesReversed) ?: return false
+        view.stopFling()
+        // jumpTo targets the page start in continuous mode. It also avoids
+        // Readium 3.3's duplicate decrement between navigator and Pdfium.
+        view.jumpTo(index, animated && !view.isSwipeVertical)
+        onViewPageChanged(view.currentPage)
+        return true
+    }
+
+    fun goBackward(animated: Boolean): Boolean = turnPage(-1, animated)
+    fun goForward(animated: Boolean): Boolean = turnPage(1, animated)
+
+    private fun turnPage(delta: Int, animated: Boolean): Boolean {
+        val view = findPdfView(pdfNavigator?.view) ?: return false
+        val page = pdfPageNumber(view.currentPage, view.pageCount, pagesReversed) + delta
+        val index = pdfViewIndex(page, view.pageCount, pagesReversed) ?: return false
+        view.stopFling()
+        view.jumpTo(index, animated && !view.isSwipeVertical)
+        onViewPageChanged(view.currentPage)
+        return true
+    }
+
+    private fun onViewPageChanged(viewIndex: Int) {
+        val view = findPdfView(pdfNavigator?.view) ?: return
+        if (view.pageCount <= 0) return
+        val page = pdfPageNumber(viewIndex, view.pageCount, pagesReversed)
+        val locations = pdfLocations ?: return
+        val progression = (page - 1).toDouble() / view.pageCount
+        val locator = locations.value.copy(
+            locations = Locator.Locations(
+                fragments = listOf("page=$page"),
+                position = page,
+                progression = progression,
+                totalProgression = progression,
+            ),
+        )
+        locations.value = locator
+        pdfVm?.locator = locator
+        listener?.onPageChanged(page, view.pageCount, locator)
     }
 
     @OptIn(org.readium.r2.shared.ExperimentalReadiumApi::class)
     fun updatePreferences(preferences: PdfiumPreferences) {
+        val model = pdfVm ?: return
+        val merged = (model.preferences ?: PdfiumPreferences()) + preferences
+        // Store before submit: its asynchronous reload invokes the engine hook.
+        // The model also restores the mode when the navigator is recreated.
+        model.preferences = merged
         val nav = pdfNavigator
         if (nav == null) {
             Log.d(TAG, "::updatePreferences - $instance - navigator not ready")
             return
         }
-        nav.submitPreferences(preferences)
+        nav.submitPreferences(merged)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -176,6 +229,7 @@ class PdfReaderFragment :
         try {
             Log.d(TAG, "::onPause - $instance")
             pdfVm?.locator = currentLocator?.value
+            pdfVm?.onViewPageChanged = null
             pdfNavigator?.let { fragment ->
                 childFragmentManager.commitNow { remove(fragment) }
             }
@@ -221,21 +275,21 @@ class PdfReaderFragment :
         pdfNavigator = pdfNav
         Log.d(TAG, "::attachNavigator() - $instance - got navigator = $pdfNav")
 
-        // PDF has no PaginationListener equivalent — emit page-changed events by
-        // observing the navigator's currentLocator. Locator.locations.position is
-        // 1-based across both swift and kotlin Readium toolkits, so it maps 1:1
-        // to a page number.
-        lifecycleScope.launch {
-            // PdfiumNavigatorFragment emits an initial locator with `position == null`
-            // before layout settles. Skip those rather than fabricate a page number;
-            // the next emission carries the real 1-based page position.
-            pdfNav.currentLocator.collect { locator ->
-                val pageIndex = locator.locations.position ?: return@collect
-                val totalPages =
-                    ReadiumReader.currentPublication?.metadata?.numberOfPages ?: 1
-                listener?.onPageChanged(pageIndex, totalPages, locator)
+        if (pdfLocations == null) {
+            pdfLocations = MutableStateFlow(pdfNav.currentLocator.value)
+        }
+        pdfVm?.onViewPageChanged = {
+            // PDFView calls onPageScroll before showPage updates currentPage.
+            // Read it after that synchronous update to avoid a stale page.
+            val view = findPdfView(pdfNav.view)
+            view?.post {
+                if (findPdfView(pdfNavigator?.view) === view) {
+                    onViewPageChanged(view.currentPage)
+                }
             }
         }
+        // A restored, already loaded view may not emit a scroll immediately.
+        findPdfView(pdfNav.view)?.let { onViewPageChanged(it.currentPage) }
 
         started.value = true
     }

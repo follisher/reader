@@ -9,7 +9,7 @@ import '../title_page.dart';
 
 /// 阅读控制器基类：集中承载可变状态与依赖，供各能力混入读写。
 ///
-/// 具体行为（内容加载、分页、翻页、纵向流）以混入形式附加，见 controller/ 下各文件。
+/// 具体行为（内容加载、分页、翻页模式、纵向流）以混入形式附加，见 controller/ 下各文件。
 abstract class ReaderControllerBase extends ChangeNotifier {
   bool _disposed = false;
   @override

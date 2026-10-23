@@ -37,6 +37,10 @@ final shelfEntriesProvider = StreamProvider<List<ShelfEntry>>((ref) {
               kind: kind,
               noteKey: noteKey,
               createdAt: note['createdAt'] as int? ?? 0,
+              chapterIndex: note['chapterIndex'] as int?,
+              startOffset: kind == ReaderNoteKind.bookmark
+                  ? note['charOffset'] as int?
+                  : note['start'] as int?,
             ),
           );
         }

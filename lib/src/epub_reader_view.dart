@@ -109,7 +109,9 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
 
   Future<void> _goByLink(rd.Link link, rd.Publication publication) async {
     final locator = publication.locatorFromLink(link);
-    debugPrint('EPUB_NAV target=${link.href} current=${_position?.href} index=$_chapter');
+    debugPrint(
+      'EPUB_NAV target=${link.href} current=${_position?.href} index=$_chapter',
+    );
     if (locator != null) await _goTo(locator);
   }
 
@@ -392,6 +394,9 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
       paragraphSpacing: _config.paragraphSpacing,
       dimLevel: _config.dimLevel,
       fontFamily: _config.fontFamily,
+      pdfLayout: previous.pdfLayout,
+      pdfFit: previous.pdfFit,
+      pdfPageSpacing: previous.pdfPageSpacing,
     );
     await _repository.saveSettings(_settings);
     if (_ready && !_closing) await _reader.configure(_preferences());
@@ -400,7 +405,9 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
 
   void _onPosition(rd.Locator locator) {
     if (!mounted || _closing) return;
-    debugPrint('EPUB_POS href=${locator.href} index=${EpubContinuousDocument.readingOrderIndex(_publication!, locator)}');
+    debugPrint(
+      'EPUB_POS href=${locator.href} index=${EpubContinuousDocument.readingOrderIndex(_publication!, locator)}',
+    );
     if (_continuousMode && _continuousTransitioning) {
       setState(() => _continuousTransitioning = false);
     }
@@ -457,7 +464,9 @@ class _EpubReaderViewState extends ConsumerState<EpubReaderView>
   }
 
   void _menuChanged() {
-    debugPrint('EPUB_MENU visible=${_menu.value} current=${_position?.href} initial=${_initial?.href} index=$_chapter');
+    debugPrint(
+      'EPUB_MENU visible=${_menu.value} current=${_position?.href} initial=${_initial?.href} index=$_chapter',
+    );
     if (_menu.value && _activeSelection != null) {
       _menu.value = false;
       unawaited(_guard(_dismissSelection));

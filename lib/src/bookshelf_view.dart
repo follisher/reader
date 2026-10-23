@@ -104,12 +104,13 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       final files = await openFiles(
         acceptedTypeGroups: [
           const XTypeGroup(
-            label: 'TXT / EPUB / Markdown',
-            extensions: ['txt', 'epub', 'md'],
+            label: 'TXT / EPUB / Markdown / PDF',
+            extensions: ['txt', 'epub', 'md', 'pdf'],
             uniformTypeIdentifiers: [
               'public.plain-text',
               'org.idpf.epub-container',
               'public.text',
+              'com.adobe.pdf',
             ],
           ),
         ],
@@ -120,8 +121,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           final name = file.name.toLowerCase();
           if (!name.endsWith('.txt') &&
               !name.endsWith('.epub') &&
+              !name.endsWith('.pdf') &&
               !file.name.toLowerCase().endsWith('.md')) {
-            throw const FormatException('请选择 UTF-8 TXT, Markdown（MD）或 EPUB 文件');
+            throw const FormatException(
+              '请选择 UTF-8 TXT、Markdown（MD）、EPUB 或 PDF 文件',
+            );
           }
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');

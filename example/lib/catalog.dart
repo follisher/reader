@@ -17,6 +17,10 @@ const demoCatalog = BookCatalog(
       tags: [AppBookTags.classic],
     ),
     CatalogBook(
+      assetPath: 'assets/books/201.杨清娟-盲派  教学体系命例集细解》-无水印245页(高清版)-好.pdf',
+      tags: [AppBookTags.classic],
+    ),
+    CatalogBook(
       assetPath: 'assets/books/奇门遁甲元灵经.md',
       tags: [AppBookTags.fortune],
     ),
@@ -32,6 +36,7 @@ const demoCatalog = BookCatalog(
       assetPath: 'assets/books/《第一序列》(校对版全本)  会说话的肘子.epub',
       tags: [AppBookTags.novel],
     ),
+    CatalogBook(assetPath: 'assets/books/流俗地.pdf', tags: [AppBookTags.novel]),
     CatalogBook(
       assetPath: 'assets/books/半小时漫画经济学2金融危机篇xg.epub',
       tags: [AppBookTags.finance],

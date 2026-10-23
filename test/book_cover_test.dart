@@ -142,4 +142,32 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('opaque EPUB note keys retain their cover tab position', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: BookCover(
+            book: book,
+            pagination: const BookCoverPagination([
+              [0, 480],
+            ]),
+            markers: const [
+              ShelfNoteMarker(
+                kind: ReaderNoteKind.comment,
+                noteKey: 'comment:opaque-native-id',
+                createdAt: 1,
+                chapterIndex: 0,
+                startOffset: 480,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('book-cover-page-tab-1')), findsOneWidget);
+  });
 }

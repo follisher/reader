@@ -159,35 +159,34 @@ class _BookCoverArtwork extends StatelessWidget {
         children: [
           CustomPaint(painter: _ClothPainter(color, _bookHash())),
           if (hasCover)
-            Opacity(
-              opacity: .28,
-              child: Image.file(
-                file!,
-                fit: BoxFit.cover,
-                cacheWidth: 360,
-                filterQuality: FilterQuality.high,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
-              ),
+            Image.file(
+              file!,
+              fit: BoxFit.cover,
+              cacheWidth: 360,
+              filterQuality: FilterQuality.high,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
             ),
-          CustomPaint(painter: _BindingPainter(color)),
-          Positioned(
-            top: 12,
-            right: 9,
-            width: titleWidth,
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: math.max(1, constraints.maxHeight - 24),
-              ),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.topRight,
-                child: SizedBox(
-                  width: titleWidth,
-                  child: _TitleSlip(book: book, seed: _bookHash()),
+          if (!hasCover) ...[
+            CustomPaint(painter: _BindingPainter(color)),
+            Positioned(
+              top: 12,
+              right: 9,
+              width: titleWidth,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: math.max(1, constraints.maxHeight - 24),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.topRight,
+                  child: SizedBox(
+                    width: titleWidth,
+                    child: _TitleSlip(book: book, seed: _bookHash()),
+                  ),
                 ),
               ),
             ),
-          ),
+          ],
         ],
       );
     },
@@ -207,8 +206,12 @@ class _BookCoverArtwork extends StatelessWidget {
             final tabs = <int, ShelfNoteMarker>{};
             for (final marker in markers) {
               final parts = marker.noteKey.split(':');
-              final chapter = int.tryParse(parts.first);
-              final offset = parts.length > 1 ? int.tryParse(parts[1]) : null;
+              // EPUB note keys are opaque IDs, so their position must come
+              // from the aggregate columns rather than parsing the key.
+              final chapter = marker.chapterIndex ?? int.tryParse(parts.first);
+              final offset =
+                  marker.startOffset ??
+                  (parts.length > 1 ? int.tryParse(parts[1]) : null);
               final page = chapter == null || offset == null
                   ? null
                   : pagination?.pageFor(chapter, offset);

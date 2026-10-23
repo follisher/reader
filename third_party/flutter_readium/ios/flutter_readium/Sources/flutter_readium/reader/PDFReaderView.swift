@@ -2,6 +2,7 @@ import ReadiumNavigator
 import ReadiumShared
 import Flutter
 import UIKit
+import PDFKit
 
 public class PDFReaderView: NSObject, FlutterPlatformView, ReadiumReaderView, PDFNavigatorDelegate {
 
@@ -154,7 +155,33 @@ public class PDFReaderView: NSObject, FlutterPlatformView, ReadiumReaderView, PD
   public func goToLocator(_ locator: Locator, animated: Bool) async -> Bool {
     Log.reader.debug("goToLocator: \(locator)")
     isJumpingToLocator = true
-    return await pdfViewController.go(to: locator, options: NavigatorGoOptions(animated: animated))
+    let success = await pdfViewController.go(to: locator, options: NavigatorGoOptions(animated: animated))
+    if success {
+      await MainActor.run {
+        self.alignTargetPage(locator)
+      }
+    }
+    isJumpingToLocator = false
+    return success
+  }
+
+  @MainActor
+  private func alignTargetPage(_ locator: Locator) {
+    guard let view = pdfViewController.pdfView,
+          let document = view.document,
+          let number = pdfTargetPageNumber(locator),
+          number >= 1, number <= document.pageCount,
+          let page = document.page(at: number - 1) else { return }
+    view.layoutIfNeeded()
+    if view.displayDirection == .vertical &&
+        (view.displayMode == .singlePageContinuous || view.displayMode == .twoUpContinuous) {
+      // PDF coordinates start at the bottom left. A page-only destination
+      // can expose its lower edge; explicitly target its visible top corner.
+      let point = pdfPageTopCorner(page.bounds(for: view.displayBox), rotation: page.rotation)
+      view.go(to: PDFDestination(page: page, at: point))
+    } else {
+      view.go(to: page)
+    }
   }
 
   public func goToProgression(_ progression: Double, animated: Bool) async -> Bool {
@@ -177,7 +204,7 @@ public class PDFReaderView: NSObject, FlutterPlatformView, ReadiumReaderView, PD
       locs.progression = coerced
       locs.position = clampedPage
     })
-    return await pdfViewController.go(to: newLocator, options: NavigatorGoOptions(animated: animated))
+    return await goToLocator(newLocator, animated: animated)
   }
 
   public func syncToLocator(_ locator: Locator, animated: Bool, segmentDuration: TimeInterval?, isWordRange: Bool) async -> Bool {

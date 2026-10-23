@@ -38,6 +38,9 @@ class CatalogSheet extends StatefulWidget {
     this.coverBuilder,
     this.isChapterLocked,
     this.initialTabIndex = 1,
+    this.bookmarksOnly = false,
+    this.emptyCatalogMessage,
+    this.bookmarkGroupKey,
   });
 
   /// Override the default artwork without coupling the engine to a bookshelf.
@@ -77,6 +80,15 @@ class CatalogSheet extends StatefulWidget {
 
   /// 初始标签页：0 详情、1 目录、2 笔记。默认从底部“目录”入口进入目录页。
   final int initialTabIndex;
+
+  /// Show only catalogue and bookmarks, without details or text annotations.
+  /// In this mode the initial tab index is 0 (catalogue) or 1 (bookmarks).
+  final bool bookmarksOnly;
+  final String? emptyCatalogMessage;
+
+  /// Optional chapter identity for formats whose navigation index is a page.
+  /// Does not change the bookmark's jump target or deletion key.
+  final Object Function(Bookmark)? bookmarkGroupKey;
 
   @override
   State<CatalogSheet> createState() => _CatalogSheetState();
@@ -138,8 +150,8 @@ class _CatalogSheetState extends State<CatalogSheet>
   static const double _itemExtent = 56;
 
   late final TabController _tab = TabController(
-    length: 3,
-    initialIndex: widget.initialTabIndex.clamp(0, 2),
+    length: widget.bookmarksOnly ? 2 : 3,
+    initialIndex: widget.initialTabIndex.clamp(0, widget.bookmarksOnly ? 1 : 2),
     vsync: this,
   );
 
@@ -161,10 +173,12 @@ class _CatalogSheetState extends State<CatalogSheet>
   late final List<Underline> _underlines =
       List<Underline>.of(widget.underlines);
   late final List<Comment> _comments = List<Comment>.of(widget.comments);
-  _NoteFilter _filter = _NoteFilter.all;
+  late _NoteFilter _filter =
+      widget.bookmarksOnly ? _NoteFilter.bookmark : _NoteFilter.all;
 
   int get _noteCount =>
-      _bookmarks.length + _underlines.length + _comments.length;
+      _bookmarks.length +
+      (widget.bookmarksOnly ? 0 : _underlines.length + _comments.length);
 
   int get _count => widget.chapterTitles.length;
 
@@ -328,7 +342,7 @@ class _CatalogSheetState extends State<CatalogSheet>
             child: TabBarView(
               controller: _tab,
               children: <Widget>[
-                _buildDetail(labels),
+                if (!widget.bookmarksOnly) _buildDetail(labels),
                 _buildCatalog(labels),
                 _buildNotes(labels),
               ],
@@ -513,12 +527,14 @@ class _CatalogSheetState extends State<CatalogSheet>
         dividerColor: Colors.transparent,
         labelPadding: const EdgeInsets.symmetric(horizontal: 8),
         tabs: <Widget>[
-          Tab(text: labels.detail),
+          if (!widget.bookmarksOnly) Tab(text: labels.detail),
           Tab(text: labels.catalog),
           Tab(
               text: _noteCount > 0
-                  ? '${labels.notesTab} $_noteCount'
-                  : labels.notesTab),
+                  ? '${widget.bookmarksOnly ? labels.bookmarkTab : labels.notesTab} $_noteCount'
+                  : widget.bookmarksOnly
+                      ? labels.bookmarkTab
+                      : labels.notesTab),
         ],
       ),
     );
@@ -579,6 +595,19 @@ class _CatalogSheetState extends State<CatalogSheet>
 
   Widget _buildCatalog(ReaderLabels labels) {
     final rows = _rows();
+    if (rows.isEmpty && widget.emptyCatalogMessage != null) {
+      return ListView(
+        controller: _listController,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 70, horizontal: 30),
+            child: Text(widget.emptyCatalogMessage!,
+                textAlign: TextAlign.center,
+                style: _sans(size: 15, color: _sub)),
+          )
+        ],
+      );
+    }
     final active = _activeToc();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -765,7 +794,7 @@ class _CatalogSheetState extends State<CatalogSheet>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        _filterRow(labels),
+        if (!widget.bookmarksOnly) _filterRow(labels),
         Expanded(child: _notesList(labels)),
       ],
     );
@@ -822,15 +851,21 @@ class _CatalogSheetState extends State<CatalogSheet>
             padding: const EdgeInsets.symmetric(vertical: 70, horizontal: 30),
             child: Column(
               children: <Widget>[
-                Icon(Icons.edit_note_outlined,
-                    size: 46, color: _sub.withValues(alpha: 0.6)),
+                Icon(
+                    widget.bookmarksOnly
+                        ? Icons.bookmark_border
+                        : Icons.edit_note_outlined,
+                    size: 46,
+                    color: _sub.withValues(alpha: 0.6)),
                 const SizedBox(height: 16),
-                Text(labels.noNotes,
+                Text(widget.bookmarksOnly ? labels.noBookmarks : labels.noNotes,
                     style:
                         _sans(size: 15, weight: FontWeight.w600, color: _sub)),
                 const SizedBox(height: 6),
                 Text(
-                  labels.noNotesHint,
+                  widget.bookmarksOnly
+                      ? labels.noBookmarksHint
+                      : labels.noNotesHint,
                   textAlign: TextAlign.center,
                   style: _sans(
                     size: 12.5,
@@ -847,21 +882,26 @@ class _CatalogSheetState extends State<CatalogSheet>
 
     // 展开为「章头 + 若干卡片」的扁平列表。
     final List<Widget> children = <Widget>[];
-    int? lastChapter;
+    final groups = <Object, List<_Note>>{};
     for (final _Note n in notes) {
-      if (n.chapterIndex != lastChapter) {
-        lastChapter = n.chapterIndex;
-        children.add(Padding(
-          padding: EdgeInsets.fromLTRB(22, children.isEmpty ? 4 : 20, 22, 10),
-          child: Text(
-            n.chapterTitle,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: _serif(size: 16),
-          ),
-        ));
+      final key = n.bookmark != null && widget.bookmarkGroupKey != null
+          ? ('bookmark', widget.bookmarkGroupKey!(n.bookmark!))
+          : n.chapterIndex;
+      groups.putIfAbsent(key, () => []).add(n);
+    }
+    for (final group in groups.values) {
+      children.add(Padding(
+        padding: EdgeInsets.fromLTRB(22, children.isEmpty ? 4 : 20, 22, 10),
+        child: Text(
+          group.first.chapterTitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _serif(size: 16),
+        ),
+      ));
+      for (final note in group) {
+        children.add(_noteCard(labels, note));
       }
-      children.add(_noteCard(labels, n));
     }
     return ListView(
       controller: _markCtrl,

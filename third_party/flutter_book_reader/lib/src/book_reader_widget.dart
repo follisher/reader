@@ -291,7 +291,7 @@ class _BookReaderState extends State<BookReader>
     }
     // 自动翻过一页后把底部入口收起为文字态（少占地方，不挡正文）。
     _autoBarCollapsed = true;
-    // 翻页；通知会经 _syncAutoTurn 检测到位置变化，从 0 重新计时。
+    // 翻页模式；通知会经 _syncAutoTurn 检测到位置变化，从 0 重新计时。
     c.nextPage();
   }
 
@@ -610,7 +610,7 @@ class _BookReaderState extends State<BookReader>
           child: Scaffold(
             backgroundColor: t.paperColor,
             // 不为键盘缩放正文：评论等输入弹层的键盘属于上层模态，若在此缩放会挤矮
-            // 正文区触发重新分页，导致背景页“翻页”，键盘收起后又弹回。
+            // 正文区触发重新分页，导致背景页“翻页模式”，键盘收起后又弹回。
             resizeToAvoidBottomInset: false,
             body: Stack(
               children: <Widget>[

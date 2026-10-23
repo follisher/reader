@@ -11,19 +11,16 @@ struct FlutterPDFPreferences {
 
   init(fromMap map: [String: Any]) {
     var prefs = PDFNavigatorViewController.Preferences()
-    // Unified PDFLayout enum from Dart, translated into PDFKit's `scroll` +
-    // `scrollAxis` pair. `paginated` uses scroll=false (snap-to-page);
-    // the two `scroll*` cases use scroll=true with the matching axis.
+    // Horizontal reading turns one page at a time and snaps on release.
+    // Keep "paginated" as a compatibility alias for previously saved settings.
     if let layoutString = map["layout"] as? String {
       switch layoutString {
-      case "paginated":
+      case "paginated", "scrollHorizontal":
         prefs.scroll = false
+        prefs.scrollAxis = .horizontal
       case "scrollVertical":
         prefs.scroll = true
         prefs.scrollAxis = .vertical
-      case "scrollHorizontal":
-        prefs.scroll = true
-        prefs.scrollAxis = .horizontal
       default:
         break
       }

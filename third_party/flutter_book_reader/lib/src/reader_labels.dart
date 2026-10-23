@@ -250,7 +250,7 @@ class ReaderLabels {
     settingsMenu: '设置',
     fontSize: '字号',
     lineSpacing: '行距',
-    flipMode: '翻页',
+    flipMode: '翻页模式',
     flipSimulation: '仿真',
     flipCover: '覆盖',
     flipSlide: '平移',

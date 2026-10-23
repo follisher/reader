@@ -347,7 +347,7 @@ class _ReaderProseState extends State<ReaderProse> {
         widget.leadingParagraphStart != old.leadingParagraphStart) {
       _recomputeBlockStarts();
     }
-    // 页内容 / 排版变化（翻页、改字号、旋转、缩放重排）时，原选区锚定的渲染盒已失效，
+    // 页内容 / 排版变化（翻页模式、改字号、旋转、缩放重排）时，原选区锚定的渲染盒已失效，
     // 立即清除选中态，避免浮层读取「待布局」的 RenderParagraph 触发断言 / 错位。
     if (!identical(widget.page, old.page) ||
         widget.pageStartOffset != old.pageStartOffset ||

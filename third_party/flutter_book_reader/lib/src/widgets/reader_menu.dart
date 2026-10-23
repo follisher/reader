@@ -34,6 +34,16 @@ class ReaderMenu extends StatefulWidget {
     this.onStopAutoTurn,
     this.autoTurning = false,
     this.supportedFlipTypes = FlipType.values,
+    this.settingsBuilder,
+    this.showDayNight = true,
+    this.showSegmentComments = true,
+    this.showTopCatalog = false,
+    this.previousLabel,
+    this.nextLabel,
+    this.progressLabel,
+    this.canGoPrevious,
+    this.canGoNext,
+    this.seekPreviewLabel,
   });
 
   final bool visible;
@@ -75,6 +85,15 @@ class ReaderMenu extends StatefulWidget {
   /// 当前是否正在自动阅读：决定该入口显示「开启自动翻页」还是「停止自动阅读」。
   final bool autoTurning;
   final List<FlipType> supportedFlipTypes;
+
+  /// A format-specific settings body within the shared animated panel.
+  final WidgetBuilder? settingsBuilder;
+  final bool showDayNight, showSegmentComments, showTopCatalog;
+  final String? previousLabel, nextLabel, progressLabel;
+  final bool? canGoPrevious, canGoNext;
+
+  /// Formats without a known total page count can supply a progress preview.
+  final String Function(double progress)? seekPreviewLabel;
 
   @override
   State<ReaderMenu> createState() => _ReaderMenuState();
@@ -215,7 +234,8 @@ class _ReaderMenuState extends State<ReaderMenu> {
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 Text(
-                  '${preview.page} / ${preview.totalPages}',
+                  widget.seekPreviewLabel?.call(_dragProgress!) ??
+                      '${preview.page} / ${preview.totalPages}',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 15,
@@ -294,17 +314,26 @@ class _ReaderMenuState extends State<ReaderMenu> {
                 ),
                 // 段评角标显 / 隐：紧邻书签按钮左侧。有人不喜欢正文里的小气泡，
                 // 这里一键收起，评论本身不受影响（笔记面板照常可见）。
-                _iconTap(
-                  _segmentCommentsShown
-                      ? Icons.mode_comment_outlined
-                      : Icons.comments_disabled_outlined,
-                  20,
-                  _segmentCommentsShown ? _accent : _sub,
-                  widget.config.toggleSegmentComments,
-                  tooltip: _segmentCommentsShown
-                      ? _labels.hideSegmentComments
-                      : _labels.showSegmentComments,
-                ),
+                if (widget.showTopCatalog)
+                  _iconTap(
+                    Icons.format_list_bulleted,
+                    20,
+                    _sub,
+                    widget.onOpenCatalog,
+                    tooltip: _labels.catalog,
+                  ),
+                if (widget.showSegmentComments)
+                  _iconTap(
+                    _segmentCommentsShown
+                        ? Icons.mode_comment_outlined
+                        : Icons.comments_disabled_outlined,
+                    20,
+                    _segmentCommentsShown ? _accent : _sub,
+                    widget.config.toggleSegmentComments,
+                    tooltip: _segmentCommentsShown
+                        ? _labels.hideSegmentComments
+                        : _labels.showSegmentComments,
+                  ),
                 const SizedBox(width: 2),
                 _iconTap(
                   widget.bookmarked ? Icons.bookmark : Icons.bookmark_border,
@@ -384,7 +413,8 @@ class _ReaderMenuState extends State<ReaderMenu> {
     final Widget child = _panel == _Panel.settings
         ? KeyedSubtree(
             key: const ValueKey<String>('settings'),
-            child: _buildSettingsPanel(),
+            child:
+                widget.settingsBuilder?.call(context) ?? _buildSettingsPanel(),
           )
         : KeyedSubtree(
             key: const ValueKey<String>('seek'),
@@ -403,34 +433,44 @@ class _ReaderMenuState extends State<ReaderMenu> {
 
   // 上一章 / 进度 / 下一章
   Widget _buildChapterSeek() {
-    final bool hasPreviousChapter = widget.chapterIndex > 0;
-    final bool hasNextChapter = widget.chapterIndex < widget.chapterCount - 1;
+    final bool hasPreviousChapter =
+        widget.canGoPrevious ?? widget.chapterIndex > 0;
+    final bool hasNextChapter =
+        widget.canGoNext ?? widget.chapterIndex < widget.chapterCount - 1;
     return Padding(
       padding: const EdgeInsets.fromLTRB(26, 18, 26, 4),
       child: Row(
         children: <Widget>[
           _seekText(
-            _labels.prevChapter,
+            widget.previousLabel ?? _labels.prevChapter,
             widget.onPrevChapter,
             enabled: hasPreviousChapter,
           ),
           Expanded(
-            child: _buildSlider(
-              value: _dragProgress ?? widget.progress,
-              onChangeStart: (double value) {
-                setState(() => _dragProgress = value);
-              },
-              onChanged: (double value) {
-                setState(() => _dragProgress = value);
-              },
-              onChangeEnd: (double value) {
-                setState(() => _dragProgress = null);
-                widget.onSeekProgress(value);
-              },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.progressLabel != null)
+                  Text(widget.progressLabel!,
+                      style: TextStyle(fontSize: 12, color: _sub)),
+                _buildSlider(
+                  value: _dragProgress ?? widget.progress,
+                  onChangeStart: (double value) {
+                    setState(() => _dragProgress = value);
+                  },
+                  onChanged: (double value) {
+                    setState(() => _dragProgress = value);
+                  },
+                  onChangeEnd: (double value) {
+                    setState(() => _dragProgress = null);
+                    widget.onSeekProgress(value);
+                  },
+                ),
+              ],
             ),
           ),
           _seekText(
-            _labels.nextChapter,
+            widget.nextLabel ?? _labels.nextChapter,
             widget.onNextChapter,
             enabled: hasNextChapter,
           ),
@@ -504,12 +544,13 @@ class _ReaderMenuState extends State<ReaderMenu> {
             _setPanel(_Panel.none);
             widget.onOpenCatalog();
           }),
-          _navBtn(
-            _t.isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round,
-            _t.isDark ? _labels.dayMode : _labels.nightMode,
-            _t.isDark ? _accent : _sub,
-            _toggleDayNight,
-          ),
+          if (widget.showDayNight)
+            _navBtn(
+              _t.isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round,
+              _t.isDark ? _labels.dayMode : _labels.nightMode,
+              _t.isDark ? _accent : _sub,
+              _toggleDayNight,
+            ),
           _navBtn(
             _panel == _Panel.settings
                 ? Icons.settings
@@ -609,7 +650,7 @@ class _ReaderMenuState extends State<ReaderMenu> {
           _buildThemeRow(),
           const SizedBox(height: 22),
 
-          // 翻页
+          // 翻页模式
           _sectionLabel(_labels.flipMode),
           const SizedBox(height: 12),
           _buildFlipRow(c),
@@ -743,52 +784,78 @@ class _ReaderMenuState extends State<ReaderMenu> {
     }
   }
 
-  // 翻页方式：5 个药丸，选中项强调色文字 + 亮底 + 阴影
-  Widget _buildFlipRow(ReaderConfig c) {
-    final bool dark = _t.isDark;
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: widget.supportedFlipTypes.map((FlipType f) {
-        final bool active = c.flipType == f;
-        final String label = _flipLabel(f);
-        return Semantics(
-          button: true,
-          selected: active,
-          label: label,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => c.setFlipType(f),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOut,
-              padding: EdgeInsets.symmetric(
-                  horizontal: active ? 15 : 9, vertical: 9),
-              decoration: BoxDecoration(
-                color: active ? _t.segActiveColor : Colors.transparent,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: active
-                    ? <BoxShadow>[
-                        BoxShadow(
-                          color: Color.fromRGBO(20, 12, 4, dark ? 0.35 : 0.12),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ]
-                    : null,
-              ),
-              child: Text(
-                label,
-                maxLines: 1,
-                style: TextStyle(
-                  fontSize: 14.5,
-                  fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                  color: active ? _accent : _sub,
+  Widget _buildFlipRow(ReaderConfig c) => ReaderChoiceRow<FlipType>(
+        values: widget.supportedFlipTypes,
+        selected: c.flipType,
+        labelFor: _flipLabel,
+        onSelected: c.setFlipType,
+        theme: _t,
+      );
+}
+
+/// Shared selection styling; each reader owns its choices and persistence.
+class ReaderChoiceRow<T> extends StatelessWidget {
+  const ReaderChoiceRow({
+    super.key,
+    required this.values,
+    required this.selected,
+    required this.labelFor,
+    required this.onSelected,
+    required this.theme,
+  });
+
+  final List<T> values;
+  final T selected;
+  final String Function(T) labelFor;
+  final ValueChanged<T> onSelected;
+  final ReaderTheme theme;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: values.map((value) {
+          final active = value == selected;
+          final label = labelFor(value);
+          return Semantics(
+            button: true,
+            selected: active,
+            label: label,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onSelected(value),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                padding: EdgeInsets.symmetric(
+                  horizontal: active ? 15 : 9,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: active ? theme.segActiveColor : Colors.transparent,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: active
+                      ? [
+                          BoxShadow(
+                            color: Color.fromRGBO(
+                                20, 12, 4, theme.isDark ? 0.35 : 0.12),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                    color: active ? theme.accentColor : theme.subTextColor,
+                  ),
                 ),
               ),
             ),
-          ),
-        );
-      }).toList(),
-    );
-  }
+          );
+        }).toList(),
+      );
 }

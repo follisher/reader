@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.ViewGroup
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commitNow
+import com.github.barteksc.pdfviewer.PDFView
 import dk.nota.flutterreadium.FlutterPdfPreferences
 import dk.nota.flutterreadium.ReadiumReaderWidget.Companion.NAVIGATOR_FRAGMENT_TAG
 import dk.nota.flutterreadium.fragments.PdfReaderFragment
@@ -22,6 +23,7 @@ import org.json.JSONObject
 import org.readium.adapter.pdfium.navigator.PdfiumEngineProvider
 import org.readium.adapter.pdfium.navigator.PdfiumPreferences
 import org.readium.r2.navigator.pdf.PdfNavigatorFactory
+import org.readium.r2.navigator.preferences.Axis
 import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.publication.Locator
 import org.readium.r2.shared.publication.Publication
@@ -37,9 +39,9 @@ private const val CURRENT_VISUAL_LOCATOR_KEY = "currentVisualCurrentLocator"
  * `BaseNavigator` shape that [EpubNavigator] uses, so the rest of the plugin
  * (ReadiumReader, ReadiumReaderWidget) can treat the two interchangeably.
  *
- * No preferences/decorations support yet — preferences land in Phase 5 of the
- * PDF support roadmap. Decorations are not exposed by the upstream PDF
- * navigator in kotlin-toolkit.
+ * PDF preferences are forwarded to the native navigator. Horizontal page snap
+ * is configured through the Pdfium engine hook. Decorations are not exposed
+ * by the upstream PDF navigator in kotlin-toolkit.
  */
 @ExperimentalCoroutinesApi
 @OptIn(ExperimentalReadiumApi::class)
@@ -77,13 +79,21 @@ class PdfNavigator :
             PdfReaderFragment().apply {
                 vm =
                     PdfReaderViewModel().apply {
+                        val model = this
+                        preferences = PdfiumPreferences(scrollAxis = Axis.HORIZONTAL)
                         navigatorFactory =
                             PdfNavigatorFactory(
                                 publication = publication,
-                                pdfEngineProvider = PdfiumEngineProvider(),
+                                pdfEngineProvider =
+                                    PdfiumEngineProvider(
+                                        listener = object : PdfiumEngineProvider.Listener {
+                                            override fun onConfigurePdfView(configurator: PDFView.Configurator) {
+                                                model.configurePdfView(configurator)
+                                            }
+                                        },
+                                    ),
                             )
                         locator = this@PdfNavigator.initialLocator
-                        preferences = PdfiumPreferences()
                     }
                 listener = this@PdfNavigator
             }

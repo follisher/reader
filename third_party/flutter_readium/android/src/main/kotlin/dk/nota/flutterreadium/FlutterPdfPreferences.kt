@@ -6,11 +6,9 @@ import org.readium.r2.navigator.preferences.Fit
 import org.readium.r2.navigator.preferences.ReadingProgression
 import org.readium.r2.shared.ExperimentalReadiumApi
 
-// PdfiumPreferences in kotlin-toolkit has no paginated mode — Pdfium is
-// always continuous-scroll. The Dart-side `PDFLayout.paginated` is therefore
-// mapped to `scrollAxis = HORIZONTAL`, which gives the closest equivalent
-// (single-page-wide viewport, one page per swipe). `scrollHorizontal` maps to
-// the same axis. `scrollVertical` maps to `Axis.VERTICAL`.
+// Horizontal reading (including the legacy "paginated" alias) uses page snap
+// and single-page fling, configured by PdfReaderViewModel through the engine's
+// onConfigurePdfView hook. Vertical reading remains continuous.
 //
 // Dart-side `PDFFit.page` maps to Pdfium `Fit.CONTAIN`. `PDFFit.auto` has no
 // Pdfium equivalent and is ignored on Android.

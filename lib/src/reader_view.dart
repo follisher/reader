@@ -14,6 +14,7 @@ import 'repository.dart';
 import 'reader_notes.dart';
 import 'reader_comment_sheets.dart';
 import 'epub_reader_view.dart';
+import 'pdf_reader_view.dart';
 import 'package:flutter/foundation.dart';
 import 'widget/book_cover.dart';
 
@@ -62,8 +63,25 @@ class _ReaderRouterState extends ConsumerState<ReaderView> {
         initialChapter: widget.initialChapter,
       );
     }
+    if (widget.book.format == BookFormat.pdf &&
+        widget.source == null &&
+        widget.controller == null) {
+      if (!supported) return const _PdfUnavailableView();
+      return PdfReaderView(
+        book: widget.book,
+        initialAnchor: widget.initialAnchor,
+      );
+    }
     return _TextReaderView(request: widget);
   }
+}
+
+class _PdfUnavailableView extends StatelessWidget {
+  const _PdfUnavailableView();
+
+  @override
+  Widget build(BuildContext context) =>
+      const Scaffold(body: Center(child: Text('PDF 阅读目前支持 Android 和 iOS 设备')));
 }
 
 class _TextReaderView extends ConsumerStatefulWidget {
@@ -253,6 +271,9 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
             dimLevel: settings.dimLevel,
             fontFamily: settings.fontFamily,
             epubScroll: previous.epubScroll,
+            pdfLayout: previous.pdfLayout,
+            pdfFit: previous.pdfFit,
+            pdfPageSpacing: previous.pdfPageSpacing,
           ),
         );
       } catch (error) {

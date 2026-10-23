@@ -7,7 +7,7 @@ import 'pagination_mixin.dart';
 import 'reader_controller_base.dart';
 import 'vertical_flow_mixin.dart';
 
-/// 阅读控制器：组合内容加载、分页、翻页、纵向流四项能力（混入），
+/// 阅读控制器：组合内容加载、分页、翻页模式、纵向流四项能力（混入），
 /// 是阅读器的单一逻辑核心，不含任何 Widget，便于独立单测。
 class ReadingController extends ReaderControllerBase
     with

@@ -12,6 +12,7 @@ import 'models.dart';
 import 'cover_pagination.dart';
 import 'book_layout.dart';
 import 'parser.dart';
+import 'pdf_cover.dart';
 
 enum ReaderNoteKind { bookmark, underline, comment }
 
@@ -20,11 +21,17 @@ class ShelfNoteMarker {
     required this.kind,
     required this.noteKey,
     required this.createdAt,
+    this.chapterIndex,
+    this.startOffset,
   });
 
   final ReaderNoteKind kind;
   final String noteKey;
   final int createdAt;
+
+  /// Stored separately because native EPUB notes use opaque IDs as [noteKey].
+  final int? chapterIndex;
+  final int? startOffset;
 }
 
 class ShelfEntry {
@@ -153,6 +160,8 @@ class LocalBookshelfRepository
   final BookParser parser;
   final _changes = StreamController<void>.broadcast();
   final _memoryCache = <String, BookContent>{};
+  final _openingBooks = <String, Future<BookContent>>{};
+  final _layouts = <String, Future<BookLayout?>>{};
   Future<void> _queue = Future.value();
 
   final _coverPagination = <String, Future<BookCoverPagination>>{};
@@ -169,6 +178,13 @@ class LocalBookshelfRepository
           );
           if (rows.isEmpty) throw const FormatException('图书已移除');
           final book = _book(rows.single);
+          // PDF page count belongs to the native navigator. Do not open or
+          // rasterize it merely to decorate the bookshelf cover.
+          if (book.format == BookFormat.pdf) {
+            return const BookCoverPagination([
+              [0],
+            ]);
+          }
           final content = await openBook(book);
           final file = File(
             p.join(directory.path, 'cache', bookId, 'cover_pages.json'),
@@ -229,7 +245,7 @@ class LocalBookshelfRepository
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 10,
+        version: 11,
         onCreate: (db, _) async {
           await db.execute(
             'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0)',
@@ -243,6 +259,15 @@ class LocalBookshelfRepository
           await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 11) {
+            // PDF thumbnails were added after the original PDF reader. Retry
+            // old imports that had been marked checked without a cover.
+            await db.execute(
+              'UPDATE books SET cover_checked = 0 '
+              'WHERE format = ? AND cover_file_name IS NULL',
+              [BookFormat.pdf.name],
+            );
+          }
           if (oldVersion < 10) {
             await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');
           }
@@ -648,7 +673,14 @@ class LocalBookshelfRepository
           final books = await _loadBooksForShelf();
           final rows = await _db.query(
             'reader_notes',
-            columns: ['book_id', 'kind', 'note_key', 'created_at'],
+            columns: [
+              'book_id',
+              'kind',
+              'note_key',
+              'created_at',
+              'chapter_index',
+              'start_offset',
+            ],
             orderBy: 'created_at DESC, note_key DESC',
           );
           final counts = <String, int>{};
@@ -663,6 +695,8 @@ class LocalBookshelfRepository
                   kind: ReaderNoteKind.values.byName(row['kind'] as String),
                   noteKey: row['note_key'] as String,
                   createdAt: row['created_at'] as int? ?? 0,
+                  chapterIndex: row['chapter_index'] as int?,
+                  startOffset: row['start_offset'] as int?,
                 ),
               );
             } catch (_) {
@@ -823,8 +857,11 @@ class LocalBookshelfRepository
       throw const FormatException('图书超过 50 MB 导入上限');
     }
     final extension = p.extension(fileName).toLowerCase();
-    if (extension != '.txt' && extension != '.epub' && extension != '.md') {
-      throw const FormatException('请选择 EPUB、TXT 或 Markdown（MD）文件');
+    if (extension != '.txt' &&
+        extension != '.epub' &&
+        extension != '.md' &&
+        extension != '.pdf') {
+      throw const FormatException('请选择 EPUB、TXT、Markdown（MD）或 PDF 文件');
     }
     final id = sha256.convert(bytes).toString();
     final existing = await _db.query('books', where: 'id = ?', whereArgs: [id]);
@@ -849,7 +886,11 @@ class LocalBookshelfRepository
     try {
       await temporary.writeAsBytes(bytes, flush: true);
       await temporary.rename(file.path);
-      final cover = await content.cover();
+      final cover =
+          await content.cover() ??
+          (extension == '.pdf'
+              ? await PdfCoverRenderer.firstPage(file.path)
+              : null);
       String? coverFileName;
       if (cover != null && cover.isNotEmpty && cover.length <= _maxCoverBytes) {
         coverFileName = p.join('covers', '$id.cover');
@@ -893,10 +934,20 @@ class LocalBookshelfRepository
   });
 
   @override
-  Future<BookContent> openBook(Book book) async {
+  Future<BookContent> openBook(Book book) =>
+      _openingBooks.putIfAbsent(book.id, () async {
+        try {
+          return await _openBook(book);
+        } finally {
+          _openingBooks.remove(book.id);
+        }
+      });
+
+  Future<BookContent> _openBook(Book book) async {
     final inMemory = _memoryCache[book.id];
     bool correctTitle(BookContent content) =>
         book.format == BookFormat.epub ||
+        book.format == BookFormat.pdf ||
         content.title == _decodeStoredTitle(book.title);
     if (inMemory != null && correctTitle(inMemory)) {
       return _withLayout(book, inMemory);
@@ -921,7 +972,8 @@ class LocalBookshelfRepository
     }
     // Managed filenames are content hashes. Preserve TXT/MD fallback titles
     // from shelf metadata, encoding separators before the parser takes basename.
-    final parsingName = book.format == BookFormat.epub
+    final parsingName =
+        book.format == BookFormat.epub || book.format == BookFormat.pdf
         ? book.fileName
         : '${Uri.encodeComponent(_decodeStoredTitle(book.title))}${p.extension(book.fileName)}';
     final content = await _parse(await file.readAsBytes(), parsingName);
@@ -954,19 +1006,23 @@ class LocalBookshelfRepository
         final temporary = File('${file.path}.tmp');
         await temporary.writeAsString(json, flush: true);
         await temporary.rename(file.path);
+        _layouts.remove(bookId);
       });
 
   Future<BookContent> _withLayout(Book book, BookContent content) async {
-    final file = File(p.join(directory.path, 'layouts', '${book.id}.json'));
-    if (!await file.exists()) return content;
-    final layout = BookLayout.fromJson(
-      jsonDecode(await file.readAsString()) as Map<String, dynamic>,
-    );
-    if (layout.sourceHash != book.id ||
-        layout.headings.any((h) => h.chapter >= content.chapters.length)) {
-      throw const FormatException('图书目录与缓存不匹配');
-    }
-    return LayoutBookContent(content, layout);
+    final layout = await _layouts.putIfAbsent(book.id, () async {
+      final file = File(p.join(directory.path, 'layouts', '${book.id}.json'));
+      if (!await file.exists()) return null;
+      final layout = BookLayout.fromJson(
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>,
+      );
+      if (layout.sourceHash != book.id ||
+          layout.headings.any((h) => h.chapter >= content.chapters.length)) {
+        throw const FormatException('图书目录与缓存不匹配');
+      }
+      return layout;
+    });
+    return layout == null ? content : LayoutBookContent(content, layout);
   }
 
   @override
@@ -1022,6 +1078,8 @@ class LocalBookshelfRepository
     // The transaction above is the success boundary. Everything below is
     // cache invalidation or best-effort cleanup and cannot reverse the write.
     _memoryCache.remove(bookId);
+    _openingBooks.remove(bookId);
+    _layouts.remove(bookId);
     _coverPagination.remove(bookId);
     _notifyChanges();
     try {
@@ -1057,6 +1115,11 @@ class LocalBookshelfRepository
       justify: options['justify'] as bool? ?? true,
       dimLevel: (options['dimLevel'] as num?)?.toDouble() ?? 0,
       fontFamily: options['fontFamily'] as String?,
+      pdfLayout: options['pdfLayout'] == 'scrollVertical'
+          ? 'scrollVertical'
+          : 'scrollHorizontal',
+      pdfFit: options['pdfFit'] as String? ?? 'width',
+      pdfPageSpacing: (options['pdfPageSpacing'] as num?)?.toDouble() ?? 8,
       fontSize: (rows.first['font_size'] as num).toDouble().clamp(14, 32),
       dark: rows.first['dark'] == 1,
     );
@@ -1132,8 +1195,8 @@ class LocalBookshelfRepository
     final rows = await _db.query(
       'books',
       columns: ['id', 'file_name'],
-      where: 'format = ? AND cover_checked = 0 AND is_hidden = 0',
-      whereArgs: [BookFormat.epub.name],
+      where: 'format IN (?, ?) AND cover_checked = 0 AND is_hidden = 0',
+      whereArgs: [BookFormat.epub.name, BookFormat.pdf.name],
     );
     for (final row in rows) {
       final id = row['id'] as String;
@@ -1141,8 +1204,12 @@ class LocalBookshelfRepository
       try {
         final file = File(p.join(directory.path, row['file_name'] as String));
         if (await file.exists()) {
-          final content = await _parse(await file.readAsBytes(), file.path);
-          final cover = await content.cover();
+          final cover = p.extension(file.path).toLowerCase() == '.pdf'
+              ? await PdfCoverRenderer.firstPage(file.path)
+              : await (await _parse(
+                  await file.readAsBytes(),
+                  file.path,
+                )).cover();
           if (cover != null &&
               cover.isNotEmpty &&
               cover.length <= _maxCoverBytes) {
@@ -1178,9 +1245,10 @@ class LocalBookshelfRepository
   Future<bool> _writeCache(String id, BookContent content) async {
     if (content is! MemoryBookContent) return false;
     final cache = Directory(p.join(directory.path, 'cache', id));
+    final staging = Directory('${cache.path}.tmp');
     try {
-      if (await cache.exists()) await cache.delete(recursive: true);
-      final resources = Directory(p.join(cache.path, 'resources'));
+      if (await staging.exists()) await staging.delete(recursive: true);
+      final resources = Directory(p.join(staging.path, 'resources'));
       await resources.create(recursive: true);
       final paths = <String>{
         for (final chapter in content.chapters)
@@ -1195,7 +1263,7 @@ class LocalBookshelfRepository
         await file.parent.create(recursive: true);
         await file.writeAsBytes(bytes, flush: true);
       }
-      final chapterDirectory = Directory(p.join(cache.path, 'chapters'));
+      final chapterDirectory = Directory(p.join(staging.path, 'chapters'));
       await chapterDirectory.create();
       for (var i = 0; i < content.chapters.length; i++) {
         await File(
@@ -1205,6 +1273,7 @@ class LocalBookshelfRepository
       final manifest = <String, Object?>{
         'version': cacheFormatVersion,
         'parserRevision': parserRevision,
+        'atomicallyPublished': true,
         'title': content.title,
         'author': content.author,
         'coverResourcePath': content.coverResourcePath,
@@ -1219,11 +1288,15 @@ class LocalBookshelfRepository
         'toc': _tocToJson(content.toc),
       };
       await File(
-        p.join(cache.path, 'content.json'),
+        p.join(staging.path, 'content.json'),
       ).writeAsString(jsonEncode(manifest), flush: true);
+      // A directory rename makes a completed cache visible at once. Readers
+      // can trust its manifest without stat-ing every chapter file.
+      if (await cache.exists()) await cache.delete(recursive: true);
+      await staging.rename(cache.path);
       return true;
     } catch (_) {
-      if (await cache.exists()) await cache.delete(recursive: true);
+      if (await staging.exists()) await staging.delete(recursive: true);
       return false;
     }
   }
@@ -1275,10 +1348,13 @@ class LocalBookshelfRepository
           }
         }
       }
-      // A partial cache must be rebuilt from the original file.
-      for (var i = 0; i < (data['chapters'] as List).length; i++) {
-        if (!await File(p.join(cache.path, 'chapters', '$i.json')).exists()) {
-          return null;
+      // Caches written before atomic publication may have been interrupted,
+      // so retain the defensive per-chapter check for those legacy folders.
+      if (data['atomicallyPublished'] != true) {
+        for (var i = 0; i < (data['chapters'] as List).length; i++) {
+          if (!await File(p.join(cache.path, 'chapters', '$i.json')).exists()) {
+            return null;
+          }
         }
       }
       return _CachedBookContent.fromJson(cache, data);
