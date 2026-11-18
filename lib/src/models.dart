@@ -1,8 +1,17 @@
 import 'dart:typed_data';
 
-enum BookFormat { txt, epub, md }
+enum BookFormat { txt, epub, md, pdf }
 
 enum BookSource { imported, builtIn, downloaded }
+
+enum BookCollection {
+  ancient('古籍'),
+  contemporary('当代'),
+  personal('私藏');
+
+  const BookCollection(this.label);
+  final String label;
+}
 
 /// Engine-owned location, persisted without lossy character conversion.
 class ReaderAnchor {
@@ -107,15 +116,26 @@ class Book {
     required this.source,
     required this.fileName,
     required this.addedAt,
+    BookCollection? collection,
     this.coverPath,
     this.cacheReady = false,
     this.location = const ReadingLocation(),
     this.lastReadAt,
     this.tags = const [],
-  });
+    // Keep the public constructor parameter independent of the private fallback.
+    // ignore: prefer_initializing_formals
+  }) : _collection = collection;
   final String id, title, author, fileName;
   final BookFormat format;
   final BookSource source;
+  final BookCollection? _collection;
+  BookCollection get collection =>
+      _collection ??
+      switch (source) {
+        BookSource.imported => BookCollection.personal,
+        BookSource.builtIn => BookCollection.ancient,
+        BookSource.downloaded => BookCollection.contemporary,
+      };
   final DateTime addedAt;
   final String? coverPath;
   final bool cacheReady;

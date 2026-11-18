@@ -1,7 +1,7 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart';
 import 'flutter_readium.dart';
 import 'reader_channel.dart';
 import 'src/index.dart';
@@ -74,7 +74,7 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   }
 
   @override
-  Widget build(final BuildContext context) => SizedBox.expand(
+  Widget build(BuildContext context) => SizedBox.expand(
     child: ReadiumWebView(
       publication: widget.publication,
       currentLocator: widget.initialLocator,
@@ -88,9 +88,9 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
 
   @override
   Future<void> go(
-    final Locator locator, {
-    required final bool isAudioBookWithText,
-    final bool animated = false,
+    Locator locator, {
+    required bool isAudioBookWithText,
+    bool animated = false,
   }) async {
     try {
       await JsPublicationChannel.goToLocator(json.encode(locator));
@@ -100,12 +100,12 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   }
 
   @override
-  Future<void> goBackward({final bool animated = true}) async {
+  Future<void> goBackward({bool animated = true}) async {
     JsPublicationChannel.goBackward();
   }
 
   @override
-  Future<void> goForward({final bool animated = true}) async {
+  Future<void> goForward({bool animated = true}) async {
     JsPublicationChannel.goForward();
   }
 

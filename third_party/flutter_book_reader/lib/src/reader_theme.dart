@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 阅读主题：纸张背景色 + 正文文字色 + 面板/强调等派生色。
 ///

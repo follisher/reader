@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/reader.dart';
@@ -25,6 +26,7 @@ void main() {
           '书.txt',
         );
         final pagination = await repo.loadCoverPagination(book.id);
+        expect(pagination.wordCount, 2000);
         final cached = File(
           '${directory.path}/cache/${book.id}/cover_pages.json',
         );
@@ -49,10 +51,27 @@ void main() {
           directory: directory,
           factory: databaseFactoryFfi,
         );
-        expect(
-          (await repo.loadCoverPagination(book.id)).chapters,
-          pagination.chapters,
+        final restored = await repo.loadCoverPagination(book.id);
+        expect(restored.chapters, pagination.chapters);
+        expect(restored.wordCount, pagination.wordCount);
+        // A page-only cache is regenerated with a count from the original text.
+        await repo.close();
+        final legacy = pagination.toJson()..['version'] = 1;
+        legacy.remove('wordCount');
+        await cached.writeAsString(
+          jsonEncode({
+            ...legacy,
+            'parserRevision': LocalBookshelfRepository.parserRevision,
+          }),
         );
+        repo = await LocalBookshelfRepository.create(
+          directory: directory,
+          factory: databaseFactoryFfi,
+        );
+        final rebuilt = await repo.loadCoverPagination(book.id);
+        expect(rebuilt.wordCount, 2000);
+        expect(rebuilt.chapters, pagination.chapters);
+        expect(jsonDecode(await cached.readAsString())['version'], 2);
         expect(
           (await repo.loadNotes(book.id, ReaderNoteKind.underline)).length,
           8,
@@ -61,6 +80,38 @@ void main() {
         await repo.close();
         await directory.delete(recursive: true);
       }
+    },
+  );
+  test(
+    'word count uses visible Unicode text without markup or synthetic content',
+    () {
+      final metrics = measureCoverChapter(
+        chapter(
+          '<h1>标题</h1> 中 文\n English &amp; 𠀀。'
+          '<script>忽略脚本</script><style>忽略样式</style><img alt="不计图片标签" />',
+        ),
+      );
+      expect(metrics.wordCount, '标题中文English&𠀀。'.runes.length);
+      expect(
+        measureCoverChapter(chapter('<img src="cover.png" />')).wordCount,
+        0,
+      );
+      expect(measureCoverChapter(chapter(' \n　')).wordCount, 0);
+      final restored = BookCoverPagination.fromJson(
+        BookCoverPagination([
+          metrics.pages,
+        ], wordCount: metrics.wordCount).toJson(),
+      );
+      expect(restored.wordCount, metrics.wordCount);
+      expect(
+        BookCoverPagination.fromJson({
+          'version': 1,
+          'chapters': [
+            [0],
+          ],
+        }).wordCount,
+        isNull,
+      );
     },
   );
   test('fixed edition wraps CJK and retains engine indent coordinates', () {
@@ -82,21 +133,16 @@ void main() {
       edition.chapters,
     );
   });
-  test(
-    'ASCII takes half a CJK column and supplementary runes retain UTF16 offsets',
-    () {
-      final ascii = paginateCoverChapter(
-        chapter(List.filled(1000, 'a').join()),
-      );
-      final cjk = paginateCoverChapter(chapter(List.filled(1000, '书').join()));
-      final supplementary = paginateCoverChapter(
-        chapter(List.filled(1000, '𠀀').join()),
-      );
-      expect(ascii.length, 2);
-      expect(cjk.length, 3);
-      expect(supplementary, [0, 878, 1838]);
-    },
-  );
+  test('ASCII takes half a CJK column and supplementary runes retain UTF16 offsets', () {
+    final ascii = paginateCoverChapter(chapter(List.filled(1000, 'a').join()));
+    final cjk = paginateCoverChapter(chapter(List.filled(1000, '书').join()));
+    final supplementary = paginateCoverChapter(
+      chapter(List.filled(1000, '𠀀').join()),
+    );
+    expect(ascii.length, 2);
+    expect(cjk.length, 3);
+    expect(supplementary, [0, 878, 1838]);
+  });
   test('paragraph indentation counts toward saved note coordinates', () {
     final data = BookChapter(
       id: 'c',

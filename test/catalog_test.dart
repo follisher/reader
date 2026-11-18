@@ -58,6 +58,29 @@ void main() {
   );
 
   test(
+    'catalog can place built-in books in the contemporary collection',
+    () async {
+      final library = ReaderLibrary(
+        repository: repository,
+        catalog: const BookCatalog(
+          books: [
+            CatalogBook(
+              assetPath: 'modern.txt',
+              collection: BookCollection.contemporary,
+              tags: [_Tags.novel],
+            ),
+          ],
+        ),
+        bundle: _Bundle({'modern.txt': '第一章\n当代文学正文'}),
+      );
+      final books = await library.loadBooksByTags(BookTagsQuery(tags: []));
+      expect(books.single.source, BookSource.builtIn);
+      expect(books.single.collection, BookCollection.contemporary);
+      expect(books.single.tags.single.name, '小说');
+    },
+  );
+
+  test(
     'queries initialize without mounting shelf; all/any and empty tags',
     () async {
       final bundle = _Bundle({

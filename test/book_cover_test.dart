@@ -1,4 +1,6 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
+
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/reader.dart';
 
@@ -14,6 +16,35 @@ void main() {
     addedAt: DateTime(2026),
     location: const ReadingLocation(progress: .5),
     tags: const [BookTag(id: 1, name: '命理')],
+  );
+
+  testWidgets(
+    'personal EPUB displays its original cover without title overlays',
+    (tester) async {
+      final original = Book(
+        id: 'original',
+        title: '原书封面',
+        author: '',
+        format: BookFormat.epub,
+        source: BookSource.imported,
+        fileName: 'original.epub',
+        addedAt: DateTime(2026),
+        coverPath: '${Directory.current.path}/asset/book_cover.png',
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: BookCover(book: original)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('book-original-cover')), findsOneWidget);
+      expect(find.byKey(const ValueKey('book-cover-title-slip')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('book-cover-classification-seal')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
   );
 
   testWidgets(
@@ -84,18 +115,70 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(tester.getSize(find.byType(BookCover)), const Size(127.6, 162));
+    expect(tester.getSize(find.byType(BookCover)), const Size(113, 162));
     expect(find.text('50.0%'), findsOneWidget);
     expect(find.bySemanticsLabel('《封面测试》，已读 50%，有阅读便签'), findsOneWidget);
     expect(tester.takeException(), isNull);
     semantics.dispose();
   });
   testWidgets(
-    'compressed paper retains page anchors and groups notes on the same page',
+    'thickness scales continuously with word count using the grid baseline',
+    (tester) async {
+      for (final count in [
+        0,
+        12500,
+        25000,
+        49999,
+        50000,
+        75000,
+        100000,
+        150000,
+        1000000,
+      ]) {
+        for (final pages in [1, 300]) {
+          await tester.pumpWidget(
+            MaterialApp(
+              home: Center(
+                child: BookCover(
+                  book: book,
+                  pagination: BookCoverPagination([
+                    [for (var i = 0; i < pages; i++) i * 480],
+                  ], wordCount: count),
+                ),
+              ),
+            ),
+          );
+          expect(
+            tester.getSize(find.byType(BookCover)).width,
+            closeTo(110 + 3 * count / 50000, .00001),
+          );
+          expect(tester.takeException(), isNull);
+        }
+      }
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: BookCover(
+              book: book,
+              minimalThickness: true,
+              pagination: const BookCoverPagination([
+                [0],
+              ], wordCount: 1000000),
+            ),
+          ),
+        ),
+      );
+      expect(tester.getSize(find.byType(BookCover)), const Size(113, 162));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'word-based paper retains page anchors and groups notes on the same page',
     (tester) async {
       final pagination = BookCoverPagination([
         [for (var i = 0; i < 1000; i++) i * 480],
-      ]);
+      ], wordCount: 1000000);
       await tester.pumpWidget(
         MaterialApp(
           home: Center(
@@ -138,7 +221,7 @@ void main() {
         find.byKey(const ValueKey('book-cover-page-tab-999')),
       );
       expect(late.dx, greaterThan(early.dx));
-      expect(tester.getSize(find.byType(BookCover)), const Size(127.6, 162));
+      expect(tester.getSize(find.byType(BookCover)), const Size(170, 162));
       expect(tester.takeException(), isNull);
     },
   );

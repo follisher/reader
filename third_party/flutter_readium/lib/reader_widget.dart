@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/material.dart' as mq show Orientation;
-import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:material_ui/material_ui.dart' as mq show Orientation;
+import 'package:material_ui/material_ui.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'flutter_readium.dart';
@@ -211,7 +211,7 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   }
 
   @override
-  Widget build(final BuildContext context) {
+  Widget build(BuildContext context) {
     _onOrientationChangeWorkaround(MediaQuery.orientationOf(context));
 
     final readingProgression = widget.publication.metadata.readingProgression;
@@ -257,17 +257,17 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
         ),
         ExcludeSemantics(
           child: Listener(
-            onPointerDown: (final event) {
+            onPointerDown: (event) {
               _pointerSession.start(event.timeStamp, event.position);
               _enableWakelock();
             },
-            onPointerMove: (final event) {
+            onPointerMove: (event) {
               if (_pointerSession.move(event.position)) {
                 _onInteraction();
               }
             },
             onPointerCancel: (_) => _pointerSession.cancel(),
-            onPointerUp: (final event) {
+            onPointerUp: (event) {
               if (_pointerSession.finish(event.timeStamp) == ReaderPointerResult.tap) {
                 final dx = event.position.dx;
 
@@ -292,9 +292,9 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
 
   @override
   Future<void> go(
-    final Locator locator, {
-    required final bool isAudioBookWithText,
-    final bool animated = false,
+    Locator locator, {
+    required bool isAudioBookWithText,
+    bool animated = false,
   }) async {
     _log.d(() => 'Go to $locator');
 
@@ -308,10 +308,10 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   }
 
   @override
-  Future<void> goBackward({final bool animated = true}) async => _channel?.goBackward();
+  Future<void> goBackward({bool animated = true}) async => _channel?.goBackward();
 
   @override
-  Future<void> goForward({final bool animated = true}) async => _channel?.goForward();
+  Future<void> goForward({bool animated = true}) async => _channel?.goForward();
 
   @override
   Future<void> setEPUBPreferences(EPUBPreferences preferences) async {
@@ -375,12 +375,12 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
     if (Platform.isAndroid) {
       return PlatformViewLink(
         viewType: _viewType,
-        surfaceFactory: (final context, final controller) => AndroidViewSurface(
+        surfaceFactory: (context, controller) => AndroidViewSurface(
           controller: controller as AndroidViewController,
           gestureRecognizers: const {},
           hitTestBehavior: PlatformViewHitTestBehavior.opaque,
         ),
-        onCreatePlatformView: (final params) =>
+        onCreatePlatformView: (params) =>
             PlatformViewsService.initSurfaceAndroidView(
                 id: params.id,
                 viewType: _viewType,
@@ -442,11 +442,11 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
 
   Locator? _currentLocator;
 
-  void _onPlatformViewCreated(final int id) {
+  void _onPlatformViewCreated(int id) {
     _channel = ReadiumReaderChannel(
       '$_viewType:$id',
       onReaderReady: _markReady,
-      onPageChanged: (final locator) {
+      onPageChanged: (locator) {
         _log.d(() => 'onPageChanged: ${locator.toJson()}');
         _currentLocator = locator;
 
@@ -506,7 +506,7 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   /// TODO: Remove this workaround, if the underlying issue is completely fixed in Readium.
   ///
   /// If orientation changes, fix page alignment, so it doesn't stay on a weird-looking page 5½.
-  void _onOrientationChangeWorkaround(final mq.Orientation orientation) async {
+  void _onOrientationChangeWorkaround(mq.Orientation orientation) async {
     if (_lastOrientation == null) {
       _lastOrientation = orientation;
 
@@ -521,7 +521,7 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
       // Remove domRange/cssSelector, so it navigates to a progression, which will always
       // trigger scrolling to the nearest page.
       if (_lastOrientation != null && _currentLocator != null) {
-        Future.delayed(const Duration(milliseconds: 500)).then((final value) {
+        Future.delayed(const Duration(milliseconds: 500)).then((value) {
           _log
             ..d(
               'Orientation changed. Re-navigating to current locator to re-align page.',
@@ -567,8 +567,8 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
   }
 
   Widget _buildSemanticsPrevNextPage({
-    required final String label,
-    required final bool toNextPage,
+    required String label,
+    required bool toNextPage,
   }) => Semantics(
     // TODO: this is not necessarily how it should be handled needs to be evaluated more
     sortKey: OrdinalSortKey(toNextPage ? 2.0 : 0.0),
@@ -579,7 +579,7 @@ class _ReadiumReaderWidgetState extends State<ReadiumReaderWidget> implements Re
     child: Container(color: Colors.transparent),
   );
 
-  Widget _buildSemanticsToggleFullScreen({required final String label}) => Semantics(
+  Widget _buildSemanticsToggleFullScreen({required String label}) => Semantics(
     sortKey: const OrdinalSortKey(1.0),
     button: true,
     container: true,

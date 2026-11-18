@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'dart:js_interop' as js_interop;
 
 import 'package:collection/collection.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_readium_platform_interface/flutter_readium_platform_interface.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:web/web.dart' as web;
 
 import 'flutter_readium_web.dart';
@@ -47,14 +47,14 @@ class ReadiumWebViewState extends State<ReadiumWebView> {
   EPUBPreferences? get _defaultPreferences => _readium.defaultPreferences;
 
   @js_interop.JSExport()
-  void onTextLocatorUpdate(final String locatorJsonString) {
+  void onTextLocatorUpdate(String locatorJsonString) {
     final locatorJson = jsonDecode(locatorJsonString);
     final locator = Locator.fromJson(locatorJson)!;
     FlutterReadiumWebPlugin.addTextLocatorUpdate(locator);
   }
 
   @js_interop.JSExport()
-  void onReaderStatusChanged(final String statusString) {
+  void onReaderStatusChanged(String statusString) {
     _log.d('Reader status changed: $statusString');
     final status = ReadiumReaderStatus.optFromString(statusString);
     if (status != null) {
@@ -65,49 +65,49 @@ class ReadiumWebViewState extends State<ReadiumWebView> {
   }
 
   @js_interop.JSExport()
-  void onTextSelectedHandler(final String jsonString) {
+  void onTextSelectedHandler(String jsonString) {
     final json = jsonDecode(jsonString);
     final event = TextSelectionEvent.fromJson(json);
     widget.onTextSelected?.call(event);
   }
 
   @js_interop.JSExport()
-  void onSelectionActionHandler(final String jsonString) {
+  void onSelectionActionHandler(String jsonString) {
     final json = jsonDecode(jsonString);
     final event = SelectionActionEvent.fromJson(json);
     widget.onSelectionAction?.call(event);
   }
 
   @js_interop.JSExport()
-  void onDecorationInteractionHandler(final String jsonString) {
+  void onDecorationInteractionHandler(String jsonString) {
     final json = jsonDecode(jsonString);
     final event = DecorationInteractionEvent.fromJson(json);
     widget.onDecorationInteraction?.call(event);
   }
 
   @js_interop.JSExport()
-  void onImageTappedHandler(final String jsonString) {
+  void onImageTappedHandler(String jsonString) {
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final event = ImageTapEvent.fromJson(json);
     widget.onImageTapped?.call(event);
   }
 
   @js_interop.JSExport()
-  void onTimebasedPlayerStateHandler(final String jsonString) {
+  void onTimebasedPlayerStateHandler(String jsonString) {
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final state = ReadiumTimebasedState.fromJson(json);
     FlutterReadiumWebPlugin.addTimeBasedStateUpdate(state);
   }
 
   @js_interop.JSExport()
-  void onErrorHandler(final String jsonString) {
+  void onErrorHandler(String jsonString) {
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final error = ReadiumError.fromJson(json);
     FlutterReadiumWebPlugin.addErrorEvent(error);
   }
 
   @js_interop.JSExport()
-  void onNarrationSyncHandler(final bool synced) {
+  void onNarrationSyncHandler(bool synced) {
     FlutterReadiumWebPlugin.addNarrationSyncUpdate(synced);
   }
 
@@ -126,7 +126,7 @@ class ReadiumWebViewState extends State<ReadiumWebView> {
   void createPlatformView(int id, web.HTMLDivElement htmlElement) async {
     try {
       final publicationUrl = widget.publication.links
-          .firstWhereOrNull((final link) => link.href.contains('manifest.json'))
+          .firstWhereOrNull((link) => link.href.contains('manifest.json'))
           ?.href;
 
       if (publicationUrl == null) {

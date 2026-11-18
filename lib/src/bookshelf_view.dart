@@ -3,7 +3,7 @@ import 'dart:math';
 import 'dart:ui' show ImageFilter;
 
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -20,12 +20,11 @@ enum _ExcerptSort { newest, oldest, random }
 
 enum BookshelfLayout { grid, categories }
 
-typedef BookshelfLayoutControlsBuilder =
-    Widget Function(
-      BuildContext context,
-      BookshelfLayout layout,
-      ValueChanged<BookshelfLayout> onChanged,
-    );
+typedef BookshelfLayoutControlsBuilder = Widget Function(
+  BuildContext context,
+  BookshelfLayout layout,
+  ValueChanged<BookshelfLayout> onChanged,
+);
 
 class BookshelfView extends ConsumerStatefulWidget {
   const BookshelfView({
@@ -51,6 +50,15 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   String _shelfQuery = '';
   String _excerptQuery = '';
   String? _selectedTag;
+  BookCollection? _selectedCollection;
+
+  BookCollection _collectionFor(List<ShelfEntry> entries) =>
+      _selectedCollection ??
+      BookCollection.values.firstWhere(
+        (collection) =>
+            entries.any((entry) => entry.book.collection == collection),
+        orElse: () => BookCollection.personal,
+      );
   String? _selectedBookId;
   _ShelfSection _section = _ShelfSection.shelf;
   BookshelfLayout _layout = BookshelfLayout.categories;
@@ -99,16 +107,19 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   }
 
   Future<void> _import() async {
+    if (_busy) return;
+    final initialTag = _selectedTag;
     setState(() => _busy = true);
     try {
       final files = await openFiles(
         acceptedTypeGroups: [
           const XTypeGroup(
-            label: 'TXT / EPUB / Markdown',
-            extensions: ['txt', 'epub', 'md'],
+            label: 'EPUB / PDF / TXT / Markdown',
+            extensions: ['txt', 'epub', 'md', 'pdf'],
             uniformTypeIdentifiers: [
               'public.plain-text',
               'org.idpf.epub-container',
+              'com.adobe.pdf',
               'public.text',
             ],
           ),
@@ -120,8 +131,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           final name = file.name.toLowerCase();
           if (!name.endsWith('.txt') &&
               !name.endsWith('.epub') &&
-              !file.name.toLowerCase().endsWith('.md')) {
-            throw const FormatException('请选择 UTF-8 TXT, Markdown（MD）或 EPUB 文件');
+              !name.endsWith('.md') &&
+              !name.endsWith('.pdf')) {
+            throw const FormatException(
+              '请选择 EPUB、PDF、UTF-8 TXT 或 Markdown（MD）文件',
+            );
           }
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
@@ -129,6 +143,24 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           final result = await ref
               .read(bookshelfRepositoryProvider)
               .importBytesWithResult(await file.readAsBytes(), file.name);
+          if (!result.isDuplicate && initialTag != null) {
+            final repository = ref.read(bookshelfRepositoryProvider);
+            if (repository is BookshelfMetadataRepository) {
+              try {
+                await (repository as BookshelfMetadataRepository).setBookTags(
+                  result.book.id,
+                  {initialTag: null},
+                );
+              } catch (error) {
+                messages.add(
+                  '《${result.book.title}》已导入，分类保存失败：${readerError(error)}',
+                );
+              }
+            }
+          }
+          if (mounted && result.book.collection == BookCollection.personal) {
+            await _editTags(result.book, initialTag: initialTag);
+          }
           messages.add(
             result.isDuplicate
                 ? '《${result.book.title}》已在书架中，已保留原有阅读进度'
@@ -144,6 +176,69 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _editTags(Book book, {String? initialTag}) async {
+    final repository = ref.read(bookshelfRepositoryProvider);
+    if (repository is! BookshelfMetadataRepository) {
+      _message('当前书库暂不支持编辑分类标签');
+      return;
+    }
+    final books = await repository.watchBooks().first;
+    if (!mounted) return;
+    final latest =
+        books.where((item) => item.id == book.id).firstOrNull ?? book;
+    final available = <String, String?>{
+      for (final item in books)
+        for (final tag in item.tags) tag.name: tag.color,
+    };
+    final selected = <String>{
+      ...latest.tags.map((tag) => tag.name),
+      ?initialTag,
+    };
+    final result = await showDialog<Set<String>>(
+      context: context,
+      builder: (_) => _BookTagsDialog(
+        title: book.title,
+        available: available.keys.toSet(),
+        selected: selected,
+      ),
+    );
+    if (result == null) return;
+    try {
+      await (repository as BookshelfMetadataRepository).setBookTags(book.id, {
+        for (final name in result) name: available[name],
+      });
+    } catch (error) {
+      _message('分类保存失败：${readerError(error)}');
+    }
+  }
+
+  Future<void> _bookActions(Book book) async {
+    if (book.collection == BookCollection.personal) {
+      final action = await showDialog<String>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: Text(book.title),
+          children: [
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 'tags'),
+              child: const Text('编辑分类标签'),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 'remove'),
+              child: const Text('从书架移除'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || action == null) return;
+      if (action == 'tags') {
+        await _editTags(book);
+        return;
+      }
+    }
+    if (mounted && await _confirmRemove(book)) await _remove(book);
   }
 
   Future<bool> _confirmRemove(Book book) async =>
@@ -426,8 +521,54 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
 
   Widget _buildShelf() {
     final entries = ref.watch(shelfEntriesProvider);
+    final allEntries = entries.asData?.value ?? <ShelfEntry>[];
+    final collection = _collectionFor(allEntries);
+    final collectionEntries = allEntries
+        .where((entry) => entry.book.collection == collection)
+        .toList();
+    if (entries.hasValue &&
+        _selectedTag != null &&
+        !collectionEntries.any(
+          (entry) => entry.book.tags.any((tag) => tag.name == _selectedTag),
+        )) {
+      _selectedTag = null;
+    }
     return Column(
       children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              for (final value in BookCollection.values)
+                Expanded(
+                  child: Semantics(
+                    selected: collection == value,
+                    child: TextButton(
+                      key: ValueKey('bookshelf-collection-${value.name}'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: collection == value
+                            ? Theme.of(context).colorScheme.onSurface
+                            : Theme.of(context).colorScheme.onSurface
+                                  .withValues(alpha: .5),
+                        textStyle: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              fontSize: 18,
+                              fontWeight: collection == value
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                            ),
+                      ),
+                      onPressed: () => setState(() {
+                        _selectedCollection = value;
+                        _selectedTag = null;
+                      }),
+                      child: Text(value.label),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
         if (_busy)
           const Padding(
             padding: EdgeInsets.only(top: 10),
@@ -447,7 +588,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
         if (entries.hasValue)
           _TagFilterBar(
             tags: {
-              for (final entry in entries.value!)
+              for (final entry in collectionEntries)
                 for (final tag in entry.book.tags) tag.name: tag,
             }.values.toList()..sort((a, b) => a.name.compareTo(b.name)),
             selected: _selectedTag,
@@ -463,23 +604,23 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
             data: (all) {
               final visible = all.where((entry) {
                 final book = entry.book;
-                return '${book.title} ${book.author}'.toLowerCase().contains(
+                return book.collection == collection &&
+                    '${book.title} ${book.author}'.toLowerCase().contains(
                       _shelfQuery,
                     ) &&
                     (_selectedTag == null ||
                         book.tags.any((tag) => tag.name == _selectedTag));
               }).toList();
-              if (visible.isEmpty) {
-                return _ShelfEmpty(
-                  allEmpty: all.isEmpty,
-                  busy: _busy,
-                  onImport: _import,
-                );
+              if (visible.isEmpty && _shelfQuery.isNotEmpty) {
+                return const Center(child: Text('没有匹配的图书'));
+              }
+              if (visible.isEmpty && collection != BookCollection.personal) {
+                return const Center(child: Text('暂无图书'));
               }
               return _selectedTag == null &&
                       _layout == BookshelfLayout.categories
-                  ? _buildCategoryShelf(visible)
-                  : _buildCompactShelf(visible);
+                  ? _buildCategoryShelf(visible, collection)
+                  : _buildCompactShelf(visible, collection);
             },
           ),
         ),
@@ -487,10 +628,15 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     );
   }
 
-  Widget _buildCompactShelf(List<ShelfEntry> entries) => ScrollConfiguration(
+  Widget _buildCompactShelf(
+    List<ShelfEntry> entries,
+    BookCollection collection,
+  ) => ScrollConfiguration(
     behavior: const _NoOverscrollBehavior(),
     child: GridView.builder(
-      key: const PageStorageKey('shelf-compact-grid'),
+      key: PageStorageKey(
+        'shelf-compact-grid-${collection.name}-$_selectedTag',
+      ),
       padding: EdgeInsets.fromLTRB(20, 4, 20, _shelfBottomPadding),
       physics: const ClampingScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -499,9 +645,18 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
         mainAxisSpacing: 14,
         childAspectRatio: 113 / 162,
       ),
-      itemCount: entries.length,
+      itemCount:
+          entries.length + (collection == BookCollection.personal ? 1 : 0),
       itemBuilder: (context, index) {
-        final entry = entries[index];
+        if (collection == BookCollection.personal && index == 0) {
+          return FittedBox(
+            fit: BoxFit.contain,
+            alignment: Alignment.topCenter,
+            child: _ImportBookCard(width: 113, busy: _busy, onTap: _import),
+          );
+        }
+        final entry =
+            entries[index - (collection == BookCollection.personal ? 1 : 0)];
         return FittedBox(
           key: ValueKey('bookshelf-grid-cell-${entry.book.id}'),
           alignment: Alignment.topCenter,
@@ -513,18 +668,17 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
             markers: const [],
             showProgress: true,
             onTap: () => widget.onBookTap(entry.book),
-            onLongPress: () async {
-              if (await _confirmRemove(entry.book)) {
-                await _remove(entry.book);
-              }
-            },
+            onLongPress: () => _bookActions(entry.book),
           ),
         );
       },
     ),
   );
 
-  Widget _buildCategoryShelf(List<ShelfEntry> entries) {
+  Widget _buildCategoryShelf(
+    List<ShelfEntry> entries,
+    BookCollection collection,
+  ) {
     final groups = <String, List<ShelfEntry>>{};
     for (final entry in entries) {
       final categories = entry.book.tags.isEmpty
@@ -539,12 +693,24 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     return ScrollConfiguration(
       behavior: const _NoOverscrollBehavior(),
       child: ListView.builder(
-        key: const PageStorageKey('shelf-grid'),
+        key: PageStorageKey('shelf-grid-${collection.name}'),
         padding: EdgeInsets.only(top: 4, bottom: _shelfBottomPadding),
         physics: const ClampingScrollPhysics(),
-        itemCount: categories.length,
+        itemCount:
+            categories.length + (collection == BookCollection.personal ? 1 : 0),
         itemBuilder: (context, index) {
-          final category = categories[index];
+          if (collection == BookCollection.personal && index == 0) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: _ImportBookCard(busy: _busy, onTap: _import),
+              ),
+            );
+          }
+          final category =
+              categories[index -
+                  (collection == BookCollection.personal ? 1 : 0)];
           final books = groups[category]!;
           return Padding(
             padding: const EdgeInsets.only(bottom: 24),
@@ -569,7 +735,9 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                 SizedBox(
                   height: 162,
                   child: SingleChildScrollView(
-                    key: PageStorageKey('bookshelf-category-$category'),
+                    key: PageStorageKey(
+                      'bookshelf-category-${collection.name}-$category',
+                    ),
                     scrollDirection: Axis.horizontal,
                     physics: const ClampingScrollPhysics(),
                     padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -583,11 +751,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                             showProgress: true,
                             markers: books[i].markers,
                             onTap: () => widget.onBookTap(books[i].book),
-                            onLongPress: () async {
-                              if (await _confirmRemove(books[i].book)) {
-                                await _remove(books[i].book);
-                              }
-                            },
+                            onLongPress: () => _bookActions(books[i].book),
                           ),
                         ],
                       ],
@@ -687,9 +851,8 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurface.withValues(alpha: .6),
+                                color: Theme.of(context).colorScheme.onSurface
+                                    .withValues(alpha: .6),
                                 height: 1.6,
                               ),
                         ),
@@ -850,9 +1013,8 @@ class _ExcerptCard extends StatelessWidget {
                       collapsedLines: 4,
                       style: TextStyle(
                         height: 1.5,
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSurface.withValues(alpha: .72),
+                        color: Theme.of(context).colorScheme.onSurface
+                            .withValues(alpha: .72),
                       ),
                     ),
                   ),
@@ -1590,44 +1752,198 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
   }
 }
 
-class _ShelfEmpty extends StatelessWidget {
-  const _ShelfEmpty({
-    required this.allEmpty,
-    required this.busy,
-    required this.onImport,
+class _BookTagsDialog extends StatefulWidget {
+  const _BookTagsDialog({
+    required this.title,
+    required this.available,
+    required this.selected,
   });
-
-  final bool allEmpty;
-  final bool busy;
-  final VoidCallback onImport;
+  final String title;
+  final Set<String> available, selected;
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.menu_book_outlined, size: 64),
-          const SizedBox(height: 20),
-          Text(
-            allEmpty ? '把想读的书，放在这里' : '没有匹配的图书',
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+  State<_BookTagsDialog> createState() => _BookTagsDialogState();
+}
+
+class _BookTagsDialogState extends State<_BookTagsDialog> {
+  final _controller = TextEditingController();
+  late final _selected = {...widget.selected};
+  late final _available = {...widget.available, ...widget.selected};
+
+  void _addTags() {
+    final names = _controller.text
+        .split(RegExp(r'[,，、;；\n]'))
+        .map((name) => name.trim())
+        .where((name) => name.isNotEmpty);
+    setState(() {
+      _available.addAll(names);
+      _selected.addAll(names);
+      _controller.clear();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final names = _available.toList()..sort();
+    return AlertDialog(
+      title: const Text('分类标签'),
+      content: SizedBox(
+        width: 360,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('《${widget.title}》'),
+              const SizedBox(height: 8),
+              const Text('可选择多个标签，也可以创建新标签。'),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final name in names)
+                    FilterChip(
+                      label: Text(name),
+                      selected: _selected.contains(name),
+                      onSelected: (selected) => setState(() {
+                        if (selected) {
+                          _selected.add(name);
+                        } else {
+                          _selected.remove(name);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                key: const ValueKey('book-tag-input'),
+                controller: _controller,
+                decoration: const InputDecoration(
+                  labelText: '新建标签',
+                  helperText: '多个标签用逗号分隔',
+                ),
+                onSubmitted: (_) => _addTags(),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: _addTags,
+                  child: const Text('添加标签'),
+                ),
+              ),
+            ],
           ),
-          if (allEmpty) ...[
-            const SizedBox(height: 12),
-            const Text('支持导入 UTF-8 TXT / EPUB 和 Markdown，导入后可离线阅读'),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: busy ? null : onImport,
-              icon: const Icon(Icons.add),
-              label: const Text('导入本地图书'),
-            ),
-          ],
-        ],
+        ),
       ),
-    ),
-  );
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            _addTags();
+            Navigator.pop(context, _selected);
+          },
+          child: const Text('保存分类'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImportBookCard extends StatelessWidget {
+  const _ImportBookCard({
+    required this.busy,
+    required this.onTap,
+    this.width = 113,
+  });
+  final bool busy;
+  final VoidCallback onTap;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurface.withValues(alpha: .5);
+    return SizedBox(
+      key: const ValueKey('bookshelf-import-card'),
+      width: width,
+      height: 162,
+      child: Semantics(
+        button: true,
+        enabled: !busy,
+        label: '添加私藏图书，支持 EPUB、PDF、TXT、Markdown',
+        child: CustomPaint(
+          painter: _DashedBookBorder(color),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: busy ? null : onTap,
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      busy ? '…' : '+',
+                      style: TextStyle(fontSize: 36, color: color),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      busy ? '正在导入' : '添加图书',
+                      style: TextStyle(fontSize: 14, color: color),
+                    ),
+                    const SizedBox(height: 8),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'EPUB / PDF\nTXT / MD',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: color),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashedBookBorder extends CustomPainter {
+  const _DashedBookBorder(this.color);
+  final Color color;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()..addRect((Offset.zero & size).deflate(1));
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (final metric in path.computeMetrics()) {
+      for (var distance = 0.0; distance < metric.length; distance += 10) {
+        canvas.drawPath(
+          metric.extractPath(distance, min(distance + 5, metric.length)),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBookBorder oldDelegate) =>
+      color != oldDelegate.color;
 }
 
 class _ErrorState extends StatelessWidget {

@@ -72,9 +72,9 @@ class ReadiumReaderChannel extends MethodChannel {
 
   /// Go e.g. navigate to a specific locator in the publication.
   Future<void> go(
-    final Locator locator, {
-    required final bool isAudioBookWithText,
-    final bool animated = false,
+    Locator locator, {
+    required bool isAudioBookWithText,
+    bool animated = false,
   }) {
     _log.d('$name: $locator, $animated');
 
@@ -86,13 +86,13 @@ class ReadiumReaderChannel extends MethodChannel {
   }
 
   /// Go to the previous page.
-  Future<void> goBackward({final bool animated = true}) {
+  Future<void> goBackward({bool animated = true}) {
     _log.d('$name: $animated');
     return _invokeMethod(_ReaderChannelMethodInvoke.goBackward, animated);
   }
 
   /// Go to the next page.
-  Future<void> goForward({final bool animated = true}) {
+  Future<void> goForward({bool animated = true}) {
     _log.d('$name: $animated');
     return _invokeMethod(_ReaderChannelMethodInvoke.goForward, animated);
   }
@@ -156,7 +156,7 @@ class ReadiumReaderChannel extends MethodChannel {
   }
 
   /// Handles method calls from the native platform.
-  Future<dynamic> onMethodCall(final MethodCall call) async {
+  Future<dynamic> onMethodCall(MethodCall call) async {
     try {
       switch (call.method) {
         case 'onReaderReady':
@@ -226,8 +226,8 @@ class ReadiumReaderChannel extends MethodChannel {
 
   /// Invokes a method on the native platform with optional arguments.
   Future<T?> _invokeMethod<T>(
-    final _ReaderChannelMethodInvoke method, [
-    final dynamic arguments,
+    _ReaderChannelMethodInvoke method, [
+    dynamic arguments,
   ]) {
     _log.d(() => arguments == null ? '$method' : '$method: $arguments');
 

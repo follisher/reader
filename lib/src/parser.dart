@@ -9,6 +9,7 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:xml/xml.dart';
 
 import 'models.dart';
+import 'pdf_support.dart';
 import 'epub_heading.dart';
 
 abstract interface class BookParser {
@@ -33,7 +34,8 @@ class LocalBookParser implements BookParser {
     if (ext == '.txt') return _text(bytes, fileName);
     if (ext == '.md') return _markdown(bytes, fileName);
     if (ext == '.epub') return _epub(bytes, fileName);
-    throw const FormatException('目前支持 EPUB、TXT 和 Markdown（MD）文件');
+    if (ext == '.pdf') return parsePdfBook(bytes, fileName);
+    throw const FormatException('目前支持 EPUB、PDF、TXT 和 Markdown（MD）文件');
   }
 
   BookContent _text(Uint8List bytes, String fileName) {

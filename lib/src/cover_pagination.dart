@@ -1,10 +1,16 @@
+import 'package:html/parser.dart' as html;
+
 import 'models.dart';
 import 'book_reader_adapter.dart' show TextChapter;
 
 /// Stable cover-only edition: 20 CJK columns, 24 lines, two-character indent.
 /// Offsets retain the reader engine's UTF-16 coordinates (including indent).
 class BookCoverPagination {
-  const BookCoverPagination(this.chapters);
+  const BookCoverPagination(this.chapters, {this.wordCount});
+
+  /// Visible Unicode characters, including punctuation but excluding whitespace.
+  /// Null means the count is unavailable, rather than an empty book.
+  final int? wordCount;
   final List<List<int>> chapters;
   int get pageCount => chapters.fold(0, (sum, pages) => sum + pages.length);
   int? pageFor(int chapter, int offset) {
@@ -24,10 +30,15 @@ class BookCoverPagination {
         low;
   }
 
-  Map<String, Object> toJson() => {'version': 1, 'chapters': chapters};
+  Map<String, Object?> toJson() => {
+    'version': 2,
+    'chapters': chapters,
+    'wordCount': wordCount,
+  };
   factory BookCoverPagination.fromJson(Map<String, dynamic> json) =>
       BookCoverPagination(
         (json['chapters'] as List).map((p) => (p as List).cast<int>()).toList(),
+        wordCount: json['wordCount'] as int?,
       );
 }
 
@@ -60,6 +71,21 @@ List<int> paginateCoverChapter(BookChapter chapter) {
     row++;
   }
   return starts;
+}
+
+/// Counts original visible text, without reader indentation, image labels or
+/// the empty-chapter placeholder introduced by the text engine.
+({List<int> pages, int wordCount}) measureCoverChapter(BookChapter chapter) {
+  var wordCount = 0;
+  final whitespace = RegExp(r'\s', unicode: true);
+  for (final block in chapter.blocks) {
+    final fragment = html.parseFragment(block);
+    for (final node in fragment.querySelectorAll('script,style')) {
+      node.remove();
+    }
+    wordCount += (fragment.text ?? '').replaceAll(whitespace, '').runes.length;
+  }
+  return (pages: paginateCoverChapter(chapter), wordCount: wordCount);
 }
 
 abstract interface class BookCoverPaginationRepository {

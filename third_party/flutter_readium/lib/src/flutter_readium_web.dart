@@ -16,14 +16,14 @@ class _PluginCallbacks {
   static final _log = ReadiumLog.tag('WebPlugin');
 
   @js_interop.JSExport()
-  void onTimebasedPlayerState(final String jsonString) {
+  void onTimebasedPlayerState(String jsonString) {
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final state = ReadiumTimebasedState.fromJson(json);
     FlutterReadiumWebPlugin.addTimeBasedStateUpdate(state);
   }
 
   @js_interop.JSExport()
-  void onReaderStatus(final String statusString) {
+  void onReaderStatus(String statusString) {
     final status = ReadiumReaderStatus.optFromString(statusString);
     if (status != null) {
       FlutterReadiumWebPlugin.addReaderStatusUpdate(status);
@@ -33,7 +33,7 @@ class _PluginCallbacks {
   }
 
   @js_interop.JSExport()
-  void onErrorHandler(final String jsonString) {
+  void onErrorHandler(String jsonString) {
     final json = jsonDecode(jsonString) as Map<String, dynamic>;
     final error = ReadiumError.fromJson(json);
     FlutterReadiumWebPlugin.addErrorEvent(error);
@@ -147,7 +147,7 @@ class FlutterReadiumWebPlugin extends FlutterReadiumPlatform {
   }
 
   static Map<String, dynamic> _transformPublicationJson(
-    final Map<String, dynamic> publicationJson,
+    Map<String, dynamic> publicationJson,
   ) {
     // The upstream ts-toolkit's Manifest.serialize() already produces correct
     // RWPM JSON (flat arrays for links/readingOrder/resources/toc, proper
@@ -249,12 +249,12 @@ class FlutterReadiumWebPlugin extends FlutterReadiumPlatform {
   }
 
   @override
-  Future<void> goBackward({final bool animated = true}) async {
+  Future<void> goBackward({bool animated = true}) async {
     JsPublicationChannel.goBackward();
   }
 
   @override
-  Future<void> goForward({final bool animated = true}) async {
+  Future<void> goForward({bool animated = true}) async {
     JsPublicationChannel.goForward();
   }
 
@@ -316,7 +316,7 @@ class FlutterReadiumWebPlugin extends FlutterReadiumPlatform {
   }
 
   @override
-  Future<bool> goToLocator(final Locator locator) async {
+  Future<bool> goToLocator(Locator locator) async {
     try {
       await JsPublicationChannel.goToLocator(json.encode(locator));
       return true;

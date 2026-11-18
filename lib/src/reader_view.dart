@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,10 +14,14 @@ import 'repository.dart';
 import 'reader_notes.dart';
 import 'reader_comment_sheets.dart';
 import 'epub_reader_view.dart';
+import 'pdf_reader_view.dart';
+
 import 'package:flutter/foundation.dart';
+
 import 'widget/book_cover.dart';
 
-/// Routes local EPUB to Readium on iOS/Android and TXT to the text engine.
+/// Routes PDF to its page viewer, EPUB to Readium on iOS/Android,
+/// and TXT/Markdown to the text engine.
 /// Supply [source] or a text [controller] for legacy/custom chapter reading.
 /// Change book/source by giving the view a new key.
 class ReaderView extends ConsumerStatefulWidget {
@@ -52,6 +56,13 @@ class _ReaderRouterState extends ConsumerState<ReaderView> {
         !kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS);
+    if (widget.book.format == BookFormat.pdf) {
+      return PdfReaderView(
+        book: widget.book,
+        initialChapter: widget.initialChapter,
+        initialAnchor: widget.initialAnchor,
+      );
+    }
     if (widget.book.format == BookFormat.epub &&
         widget.source == null &&
         widget.controller == null &&
@@ -363,9 +374,9 @@ class _ReaderViewState extends ConsumerState<_TextReaderView>
   Future<void> _onSegmentTap(engine.ReaderSegmentTap segment) async {
     _controller.stopAutoTurn();
     try {
-      final comments = (await _notes.comments.load(
-        widget.book.id,
-      )).where(segment.contains).toList();
+      final comments = (await _notes.comments.load(widget.book.id))
+          .where(segment.contains)
+          .toList();
       if (!mounted) return;
       await showModalBottomSheet<void>(
         context: context,

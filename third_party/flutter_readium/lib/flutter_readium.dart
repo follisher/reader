@@ -3,9 +3,9 @@ import 'dart:ui' as ui;
 
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_readium_platform_interface/flutter_readium_platform_interface.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'network_image_codec_switch.dart';
 
@@ -127,16 +127,16 @@ class FlutterReadium {
   ///
   /// This is only applicable for publications that have a TOC and may not be supported for all formats.
   Future<void> skipToNextTOC({
-    required final Publication publication,
-    required final String currentTocHref,
+    required Publication publication,
+    required String currentTocHref,
   }) => _skipToTOCItem(publication, currentTocHref, 1);
 
   /// Skips to the previous chapter in the publication's (flattened) table of contents.
   ///
   /// This is only applicable for publications that have a TOC and may not be supported for all formats.
   Future<void> skipToPreviousTOC({
-    required final Publication publication,
-    required final String currentTocHref,
+    required Publication publication,
+    required String currentTocHref,
   }) => _skipToTOCItem(publication, currentTocHref, -1);
 
   /// Sets the EPUB preferences for the currently opened publication.
@@ -246,13 +246,13 @@ class FlutterReadium {
   /// The lookup is case-insensitive and matched against the publication's page list.
   /// Throws a [ReadiumException] if no matching page link is found.
   Future<bool> toPhysicalPageIndex(
-    final String index,
-    final Publication pub,
+    String index,
+    Publication pub,
   ) async {
     final pageIndex = index.toLowerCase();
     final pageList = pub.pageList;
     final pageLink = pageList.firstWhereOrNull(
-      (final link) => link.title?.toLowerCase() == pageIndex,
+      (link) => link.title?.toLowerCase() == pageIndex,
     );
     if (pageLink == null) {
       throw ReadiumException(ReadiumError('Page link not found'));
@@ -264,7 +264,7 @@ class FlutterReadium {
   /// Navigates the reader to the position corresponding to the given [link] within the Publication [pub].
   ///
   /// Throws a [ReadiumException] if the link cannot be resolved to a locator.
-  Future<bool> goByLink(final Link link, final Publication pub) async {
+  Future<bool> goByLink(Link link, Publication pub) async {
     _log.d(() => 'Navigating to link: $link');
 
     final locator = pub.locatorFromLink(link);

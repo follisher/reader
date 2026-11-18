@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../providers.dart';
 import '../cover_pagination.dart';
 
@@ -42,15 +43,10 @@ class BookCover extends StatelessWidget {
   final bool showProgress;
   final List<ShelfNoteMarker> markers;
 
-  double get _pageDepth => minimalThickness
+  /// Grid mode supplies the baseline: 3 pixels for every 50,000 characters.
+  double get _pageDepth => minimalThickness || pagination?.wordCount == null
       ? _paperTopHeight
-      : math.max(
-          _paperTopHeight,
-          math.min(
-            (110 * .16).clamp(15.0, 20.0),
-            math.max(1, pagination?.pageCount ?? 100) * .2,
-          ),
-        );
+      : _paperTopHeight * math.max(0, pagination!.wordCount!) / 50000;
 
   @override
   Widget build(BuildContext context) => SizedBox(
@@ -141,9 +137,10 @@ class _BookCoverArtwork extends StatelessWidget {
         ? int.tryParse('FF$hex', radix: 16)
         : null;
     if (parsed == null) return _fallbackColor();
-    return HSLColor.fromColor(
-      Color(parsed),
-    ).withSaturation(.24).withLightness(.30).toColor();
+    return HSLColor.fromColor(Color(parsed))
+        .withSaturation(.24)
+        .withLightness(.30)
+        .toColor();
   }
 
   Widget _frontCover(File? file, bool hasCover) => LayoutBuilder(
@@ -154,6 +151,16 @@ class _BookCoverArtwork extends StatelessWidget {
         book.title,
         maxWidth: math.max(1, constraints.maxWidth - 25),
       );
+      if (book.collection == BookCollection.personal && hasCover) {
+        return Image.file(
+          file!,
+          key: const ValueKey('book-original-cover'),
+          fit: BoxFit.cover,
+          cacheWidth: 360,
+          filterQuality: FilterQuality.high,
+          errorBuilder: (_, _, _) => _frontCover(null, false),
+        );
+      }
       return Stack(
         fit: StackFit.expand,
         children: [
@@ -202,6 +209,7 @@ class _BookCoverArtwork extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) {
             final height = constraints.maxHeight;
+            final topHeight = math.min(_paperTopHeight, pageDepth);
             final pages = math.max(1, pagination?.pageCount ?? 100);
 
             final tabs = <int, ShelfNoteMarker>{};
@@ -300,7 +308,7 @@ class _BookCoverArtwork extends StatelessWidget {
                   ),
                 Positioned(
                   left: 1,
-                  top: _paperTopHeight,
+                  top: topHeight,
                   right: coverRight,
                   bottom: 5,
                   child: ClipRRect(
@@ -699,10 +707,12 @@ class _PageEdgesPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (depth <= 0) return;
+    final topHeight = math.min(_paperTopHeight, depth);
     final front = size.width - depth;
     final top = Path()
-      ..moveTo(0, _paperTopHeight)
-      ..lineTo(front, _paperTopHeight)
+      ..moveTo(0, topHeight)
+      ..lineTo(front, topHeight)
       ..lineTo(size.width, 0)
       ..lineTo(depth, 0)
       ..close();
@@ -713,12 +723,12 @@ class _PageEdgesPainter extends CustomPainter {
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [Color(0xFFF8EFD9), Color(0xFFF1E6CD)],
-        ).createShader(Rect.fromLTWH(0, 0, size.width, _paperTopHeight)),
+        ).createShader(Rect.fromLTWH(0, 0, size.width, topHeight)),
     );
     final side = Path()
-      ..moveTo(front, _paperTopHeight)
+      ..moveTo(front, topHeight)
       ..lineTo(size.width, 0)
-      ..lineTo(size.width, size.height - _paperTopHeight)
+      ..lineTo(size.width, size.height - topHeight)
       ..lineTo(front, size.height)
       ..close();
     final paperRect = Rect.fromLTWH(front, 0, depth, size.height);
@@ -733,10 +743,10 @@ class _PageEdgesPainter extends CustomPainter {
     for (var stripe = 0; stripe < textureCount; stripe++) {
       final fraction = (stripe + .5) / textureCount;
       final x = front + depth * fraction;
-      final y = _paperTopHeight * (1 - fraction);
+      final y = topHeight * (1 - fraction);
       final lines = stripe.isEven ? darkLines : lightLines;
       lines.moveTo(x, y);
-      lines.lineTo(x, size.height - _paperTopHeight * fraction);
+      lines.lineTo(x, size.height - topHeight * fraction);
     }
     canvas.drawPath(
       darkLines,
@@ -769,10 +779,10 @@ class _PageEdgesPainter extends CustomPainter {
         ..strokeWidth = .05,
     );
     final coverEdges = Path()
-      ..moveTo(0, _paperTopHeight)
+      ..moveTo(0, topHeight)
       ..lineTo(depth, 0)
       ..lineTo(size.width, 0)
-      ..lineTo(size.width, size.height - _paperTopHeight);
+      ..lineTo(size.width, size.height - topHeight);
     canvas.drawPath(
       coverEdges,
       Paint()

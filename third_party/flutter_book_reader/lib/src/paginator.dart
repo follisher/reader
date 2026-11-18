@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 页内文本块：一个段落，或一个段落被跨页拆开后的一部分。
 class ReaderBlock {

@@ -1,11 +1,12 @@
 name: reader
-description: Reusable EPUB and TXT bookshelf and reader.
+description: Reusable EPUB, PDF, TXT and Markdown bookshelf and reader.
 version: 0.1.0
 publish_to: none
 environment:
-  sdk: '>=3.10.0 <4.0.0'
-  flutter: '>=3.44.4'
+  sdk: '>=3.13.0 <4.0.0'
+  flutter: '>=3.47.0'
 dependencies:
+  material_ui: ^1.11.0
   flutter:
     sdk: flutter
   flutter_riverpod: ^2.6.1
@@ -30,6 +31,7 @@ dependencies:
     path: third_party/flutter_book_reader
   flutter_readium:
     path: third_party/flutter_readium
+  pdfrx: ^2.13.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

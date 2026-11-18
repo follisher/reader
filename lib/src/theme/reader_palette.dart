@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Shared monochrome design tokens used by the shelf and both reader modes.
 /// Keep this palette independent from fonts so hosts can provide their own type.

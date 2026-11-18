@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reader/reader.dart';
@@ -49,6 +49,70 @@ class FailingNotesRepository extends FakeRepository {
 }
 
 void main() {
+  test(
+    'reading backup restores settings, position, bookmarks, highlights and comments',
+    () async {
+      sqfliteFfiInit();
+      final sourceDir = await Directory.systemTemp.createTemp(
+        'reader-backup-source-',
+      );
+      final targetDir = await Directory.systemTemp.createTemp(
+        'reader-backup-target-',
+      );
+      final bytes = utf8.encode('第一章\n备份用正文');
+      final source = await LocalBookshelfRepository.create(
+        directory: sourceDir,
+        factory: databaseFactoryFfi,
+      );
+      final target = await LocalBookshelfRepository.create(
+        directory: targetDir,
+        factory: databaseFactoryFfi,
+      );
+      try {
+        final book = await source.importBytes(bytes, 'backup.txt');
+        await source.saveSettings(
+          const ReaderSettings(fontSize: 24, dark: true, theme: 'night'),
+        );
+        await source.saveLocation(
+          book.id,
+          const ReadingLocation(
+            chapter: 1,
+            block: 2,
+            progress: .6,
+            charOffset: 8,
+          ),
+        );
+        await source.saveNotes(book.id, ReaderNoteKind.bookmark, [
+          bookmark.toJson(),
+        ]);
+        await source.saveNotes(book.id, ReaderNoteKind.underline, [
+          underline.toJson(),
+        ]);
+        await source.saveNotes(book.id, ReaderNoteKind.comment, [
+          comment.toJson(),
+        ]);
+        final snapshot = await source.exportReadingBackup();
+
+        final targetBook = await target.importBytes(bytes, 'backup.txt');
+        await target.mergeReadingBackup(snapshot);
+        final restored = (await target.watchBooks().first).single;
+        expect(restored.id, targetBook.id);
+        expect(restored.location.progress, .6);
+        expect(restored.location.charOffset, 8);
+        expect((await target.loadSettings()).fontSize, 24);
+        expect((await target.loadSettings()).dark, isTrue);
+        for (final kind in ReaderNoteKind.values) {
+          expect(await target.loadNotes(targetBook.id, kind), hasLength(1));
+        }
+      } finally {
+        await source.close();
+        await target.close();
+        await sourceDir.delete(recursive: true);
+        await targetDir.delete(recursive: true);
+      }
+    },
+  );
+
   test(
     'removed built-in book stays hidden after asset sync and restart',
     () async {

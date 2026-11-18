@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
-import 'package:flutter/material.dart';
+
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:reader/src/epub_reader_view.dart';
 import 'package:flutter/rendering.dart';
@@ -132,7 +133,7 @@ class _PaginatedRepository extends FakeRepository
   Future<BookCoverPagination> loadCoverPagination(String bookId) async =>
       BookCoverPagination([
         [for (var i = 0; i < 300; i++) i * 480],
-      ]);
+      ], wordCount: 100000);
 }
 
 void main() {
@@ -169,7 +170,7 @@ void main() {
         findsNothing,
       );
       expect(
-        find.byKey(const PageStorageKey('shelf-compact-grid')),
+        find.byKey(const PageStorageKey('shelf-compact-grid-personal-八字')),
         findsOneWidget,
       );
       expect(
@@ -191,7 +192,7 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.byKey(const PageStorageKey('bookshelf-category-八字')),
+        find.byKey(const PageStorageKey('bookshelf-category-personal-八字')),
         findsOneWidget,
       );
       await tester.tap(find.byKey(const ValueKey('bookshelf-layout-grid')));
@@ -209,7 +210,7 @@ void main() {
       await tester.tap(find.widgetWithText(ChoiceChip, '全部'));
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const PageStorageKey('shelf-compact-grid')),
+        find.byKey(const PageStorageKey('shelf-compact-grid-personal-null')),
         findsOneWidget,
       );
       expect(find.byType(BookCover), findsNWidgets(3));
@@ -236,7 +237,7 @@ void main() {
               title: '图书$i',
               author: '',
               format: BookFormat.txt,
-              source: BookSource.imported,
+              source: BookSource.builtIn,
               fileName: '$i.txt',
               addedAt: DateTime(2026),
             ),
@@ -276,17 +277,14 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const PageStorageKey('bookshelf-category-未分类')),
+        find.byKey(const PageStorageKey('bookshelf-category-personal-未分类')),
         findsOneWidget,
       );
       expect(
         find.byKey(const ValueKey('book-cover-page-tab-1')),
         findsOneWidget,
       );
-      expect(
-        tester.getSize(find.byType(BookCover)).width,
-        closeTo(127.6, .001),
-      );
+      expect(tester.getSize(find.byType(BookCover)).width, closeTo(116, .001));
       expect(
         tester
             .getBottomLeft(
@@ -304,7 +302,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('bookshelf-layout-grid')));
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const PageStorageKey('shelf-compact-grid')),
+        find.byKey(const PageStorageKey('shelf-compact-grid-personal-null')),
         findsOneWidget,
       );
       expect(find.byType(GridView), findsOneWidget);
@@ -325,7 +323,7 @@ void main() {
       await tester.tap(find.text('书架'));
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const PageStorageKey('shelf-compact-grid')),
+        find.byKey(const PageStorageKey('shelf-compact-grid-personal-null')),
         findsOneWidget,
       );
       await tester.tap(
@@ -333,7 +331,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const PageStorageKey('bookshelf-category-未分类')),
+        find.byKey(const PageStorageKey('bookshelf-category-personal-未分类')),
         findsOneWidget,
       );
       expect(
@@ -383,7 +381,7 @@ void main() {
       expect(tester.getTopLeft(title).dx, first.left);
       expect(tester.getBottomLeft(title).dy, lessThan(first.top));
       await tester.drag(
-        find.byKey(const PageStorageKey('bookshelf-category-未分类')),
+        find.byKey(const PageStorageKey('bookshelf-category-personal-未分类')),
         const Offset(-160, 0),
       );
       await tester.pumpAndSettle();
@@ -421,15 +419,15 @@ void main() {
       final firstRect = tester.getRect(first);
       final secondRect = tester.getRect(second);
       await tester.drag(
-        find.byKey(const PageStorageKey('bookshelf-category-分类0')),
+        find.byKey(const PageStorageKey('bookshelf-category-personal-分类0')),
         const Offset(-180, 0),
       );
       await tester.pumpAndSettle();
       expect(tester.getRect(first).left, lessThan(firstRect.left));
       expect(tester.getRect(second).left, secondRect.left);
       await tester.drag(
-        find.byKey(const PageStorageKey('shelf-grid')),
-        const Offset(0, -230),
+        find.byKey(const PageStorageKey('shelf-grid-personal')),
+        const Offset(0, -430),
       );
       await tester.pumpAndSettle();
       expect(tester.getRect(second).top, lessThan(secondRect.top));
@@ -475,9 +473,8 @@ void main() {
       expect(find.byType(engine.BookReader), findsOneWidget);
       expect(find.byType(EpubReaderView), findsNothing);
       expect(
-        ProviderScope.containerOf(
-          tester.element(find.byType(ReaderView)),
-        ).read(bookshelfRepositoryProvider),
+        ProviderScope.containerOf(tester.element(find.byType(ReaderView)))
+            .read(bookshelfRepositoryProvider),
         same(repository),
       );
       // The catalog route sits outside the page's ProviderScope. Its cover
@@ -640,7 +637,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     final shelf = tester.widget<ListView>(
-      find.byKey(const PageStorageKey('shelf-grid')),
+      find.byKey(const PageStorageKey('shelf-grid-personal')),
     );
     expect(shelf.physics, isA<ClampingScrollPhysics>());
     expect(find.byType(LinearProgressIndicator), findsNothing);

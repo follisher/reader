@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'flutter_readium.dart';
 import 'reader_channel.dart';
 
@@ -51,5 +51,5 @@ class ReadiumReaderWidget extends StatelessWidget {
   final bool verticalScroll;
 
   @override
-  Widget build(final BuildContext context) => Center(child: Text('ReaderWidget is not available on this platform.'));
+  Widget build(BuildContext context) => Center(child: Text('ReaderWidget is not available on this platform.'));
 }

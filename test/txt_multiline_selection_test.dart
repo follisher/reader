@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart';
 import 'package:flutter_book_reader/src/paginator.dart';
 import 'package:flutter_book_reader/src/text_actions.dart';

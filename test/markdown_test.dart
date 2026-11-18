@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'views_test.dart' show FakeRepository, app;
 import 'package:reader/reader.dart';

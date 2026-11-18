@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:flutter_book_reader/src/controller/reading_controller.dart';

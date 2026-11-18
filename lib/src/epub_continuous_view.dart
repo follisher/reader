@@ -3,8 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_book_reader/flutter_book_reader.dart' as engine;
 import 'package:flutter_readium/flutter_readium.dart' as rd;
 import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';

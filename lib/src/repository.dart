@@ -106,6 +106,12 @@ abstract interface class BookshelfRepository {
   Future<void> syncCatalogTags(String bookId, Map<String, String?> tags);
 }
 
+/// Optional editable shelf metadata, independent from catalog-owned tags.
+abstract interface class BookshelfMetadataRepository {
+  Future<void> setBookCollection(String bookId, BookCollection collection);
+  Future<void> setBookTags(String bookId, Map<String, String?> tags);
+}
+
 /// Optional aggregate queries used by the enhanced shelf. Keeping these in a
 /// companion interface preserves compatibility with custom repositories.
 abstract interface class BookshelfInsightsRepository {
@@ -113,6 +119,15 @@ abstract interface class BookshelfInsightsRepository {
   Stream<List<ExcerptItem>> watchExcerpts();
   Future<List<ExcerptItem>> loadExcerpts();
   Future<void> deleteReaderNote(ReaderNoteRef ref);
+}
+
+/// Optional portable reading data support. A snapshot contains reading
+/// settings, positions, bookmarks, underlines and comments, but never book
+/// files themselves.
+abstract interface class ReaderBackupRepository {
+  Stream<void> get readingBackupChanges;
+  Future<Map<String, Object?>> exportReadingBackup();
+  Future<void> mergeReadingBackup(Object? raw);
 }
 
 abstract interface class PublicationFileRepository {
@@ -132,6 +147,8 @@ class LocalBookshelfRepository
     implements
         BookshelfRepository,
         BookshelfInsightsRepository,
+        BookshelfMetadataRepository,
+        ReaderBackupRepository,
         PublicationFileRepository,
         BookLayoutRepository,
         BookCoverPaginationRepository {
@@ -159,6 +176,9 @@ class LocalBookshelfRepository
   Future<void> _coverQueue = Future.value();
 
   @override
+  Stream<void> get readingBackupChanges => _changes.stream;
+
+  @override
   Future<BookCoverPagination> loadCoverPagination(String bookId) =>
       _coverPagination.putIfAbsent(bookId, () {
         final result = _coverQueue.then((_) async {
@@ -177,7 +197,9 @@ class LocalBookshelfRepository
             try {
               final data =
                   jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-              if (data['version'] == 1 &&
+              if (data['version'] == 2 &&
+                  data['wordCount'] is int &&
+                  (data['wordCount'] as int) >= 0 &&
                   data['parserRevision'] == parserRevision) {
                 return BookCoverPagination.fromJson(data);
               }
@@ -186,17 +208,18 @@ class LocalBookshelfRepository
             }
           }
           final pages = <List<int>>[];
+          var wordCount = 0;
           for (var i = 0; i < content.chapters.length; i++) {
             final chapter = content is LayoutBookContent
                 ? await content.readOriginalChapter(i)
                 : await content.readChapter(i);
-            pages.add(
-              Platform.environment['FLUTTER_TEST'] == 'true'
-                  ? paginateCoverChapter(chapter)
-                  : await compute(paginateCoverChapter, chapter),
-            );
+            final metrics = Platform.environment['FLUTTER_TEST'] == 'true'
+                ? measureCoverChapter(chapter)
+                : await compute(measureCoverChapter, chapter);
+            pages.add(metrics.pages);
+            wordCount += metrics.wordCount;
           }
-          final pagination = BookCoverPagination(pages);
+          final pagination = BookCoverPagination(pages, wordCount: wordCount);
           try {
             await file.parent.create(recursive: true);
             await file.writeAsString(
@@ -229,7 +252,7 @@ class LocalBookshelfRepository
     final db = await (factory ?? databaseFactory).openDatabase(
       p.join(root.path, 'reader.sqlite'),
       options: OpenDatabaseOptions(
-        version: 10,
+        version: 11,
         onCreate: (db, _) async {
           await db.execute(
             'CREATE TABLE books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, format TEXT NOT NULL, source TEXT NOT NULL, file_name TEXT NOT NULL, cover_file_name TEXT, cover_checked INTEGER NOT NULL DEFAULT 0, cache_ready INTEGER NOT NULL DEFAULT 0, added_at INTEGER NOT NULL, last_read_at INTEGER, chapter INTEGER NOT NULL DEFAULT 0, block INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, char_offset INTEGER, is_hidden INTEGER NOT NULL DEFAULT 0)',
@@ -241,8 +264,12 @@ class LocalBookshelfRepository
           await _createNotesIndexes(db);
           await _createTagsTables(db);
           await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');
+          await db.execute('ALTER TABLE books ADD COLUMN collection TEXT');
         },
         onUpgrade: (db, oldVersion, _) async {
+          if (oldVersion < 11) {
+            await db.execute('ALTER TABLE books ADD COLUMN collection TEXT');
+          }
           if (oldVersion < 10) {
             await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');
           }
@@ -467,6 +494,196 @@ class LocalBookshelfRepository
     ).then((_) => _changes.add(null));
   }
 
+  @override
+  Future<Map<String, Object?>> exportReadingBackup() => _serial(() async {
+    final settingRows = await _db.query('settings', where: 'id = 1');
+    Map<String, Object?>? settings;
+    if (settingRows.isNotEmpty) {
+      final row = settingRows.single;
+      try {
+        settings = {
+          'fontSize': (row['font_size'] as num).toDouble(),
+          'dark': row['dark'] == 1,
+          'options': row['options'] == null
+              ? <String, Object?>{}
+              : Map<String, Object?>.from(
+                  jsonDecode(row['options'] as String) as Map,
+                ),
+        };
+      } catch (_) {
+        // A malformed legacy row is ignored instead of invalidating notes.
+      }
+    }
+    final books = await _db.query(
+      'books',
+      columns: [
+        'id',
+        'chapter',
+        'block',
+        'progress',
+        'char_offset',
+        'anchor_json',
+        'last_read_at',
+      ],
+      where: 'is_hidden = 0',
+      orderBy: 'id ASC',
+    );
+    final notes = await _db.query(
+      'reader_notes',
+      columns: ['book_id', 'kind', 'note_key', 'payload'],
+      orderBy: 'book_id ASC, kind ASC, note_key ASC',
+    );
+    return {
+      'version': 1,
+      'settings': ?settings,
+      'locations': [
+        for (final book in books)
+          {
+            'bookId': book['id'],
+            'chapter': book['chapter'],
+            'block': book['block'],
+            'progress': book['progress'],
+            'charOffset': book['char_offset'],
+            'anchor': book['anchor_json'] == null
+                ? null
+                : jsonDecode(book['anchor_json'] as String),
+            'lastReadAt': book['last_read_at'],
+          },
+      ],
+      'notes': [
+        for (final note in notes)
+          {
+            'bookId': note['book_id'],
+            'kind': note['kind'],
+            'noteKey': note['note_key'],
+            'payload': jsonDecode(note['payload'] as String),
+          },
+      ],
+    };
+  });
+
+  @override
+  Future<void> mergeReadingBackup(Object? raw) {
+    if (raw is! Map || (raw['version'] != null && raw['version'] != 1)) {
+      throw const FormatException('图书阅读备份格式无效');
+    }
+    final locations = _readingBackupRows(raw['locations'], '阅读位置');
+    final notes = _readingBackupRows(raw['notes'], '阅读笔记');
+    final settings = raw['settings'];
+    if (settings != null && settings is! Map) {
+      throw const FormatException('图书阅读设置格式无效');
+    }
+    return _serial(() async {
+      await _db.transaction((txn) async {
+        if (settings is Map) {
+          final fontSize = settings['fontSize'];
+          final dark = settings['dark'];
+          final options = settings['options'];
+          if (fontSize is! num || dark is! bool || options is! Map) {
+            throw const FormatException('图书阅读设置格式无效');
+          }
+          await txn.insert('settings', {
+            'id': 1,
+            'font_size': fontSize.toDouble().clamp(14, 32),
+            'dark': dark ? 1 : 0,
+            'options': jsonEncode(Map<String, Object?>.from(options)),
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        for (final location in locations) {
+          final id = location['bookId'];
+          final chapter = location['chapter'];
+          final block = location['block'];
+          final progress = location['progress'];
+          final charOffset = location['charOffset'];
+          final anchor = location['anchor'];
+          final lastReadAt = location['lastReadAt'];
+          if (id is! String ||
+              id.isEmpty ||
+              chapter is! int ||
+              block is! int ||
+              progress is! num ||
+              (charOffset != null && charOffset is! int) ||
+              (anchor != null && ReaderAnchor.fromJson(anchor) == null) ||
+              (lastReadAt != null && lastReadAt is! int)) {
+            throw const FormatException('图书阅读位置格式无效');
+          }
+          final existing = await txn.query(
+            'books',
+            columns: ['last_read_at'],
+            where: 'id = ? AND is_hidden = 0',
+            whereArgs: [id],
+            limit: 1,
+          );
+          if (existing.isEmpty) continue;
+          final localTime = existing.single['last_read_at'] as int? ?? 0;
+          final incomingTime = lastReadAt as int? ?? 0;
+          if (incomingTime < localTime) continue;
+          await txn.update(
+            'books',
+            {
+              'chapter': chapter,
+              'block': block,
+              'progress': progress.toDouble().clamp(0, 1),
+              'char_offset': charOffset,
+              'anchor_json': anchor == null ? null : jsonEncode(anchor),
+              'last_read_at': lastReadAt,
+            },
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+        }
+        for (final note in notes) {
+          final bookId = note['bookId'];
+          final kindName = note['kind'];
+          final noteKey = note['noteKey'];
+          final payload = note['payload'];
+          if (bookId is! String ||
+              bookId.isEmpty ||
+              kindName is! String ||
+              noteKey is! String ||
+              noteKey.isEmpty ||
+              payload is! Map) {
+            throw const FormatException('图书阅读笔记格式无效');
+          }
+          ReaderNoteKind kind;
+          try {
+            kind = ReaderNoteKind.values.byName(kindName);
+          } catch (_) {
+            throw const FormatException('图书阅读笔记类型无效');
+          }
+          final books = await txn.query(
+            'books',
+            columns: ['id'],
+            where: 'id = ? AND is_hidden = 0',
+            whereArgs: [bookId],
+            limit: 1,
+          );
+          if (books.isEmpty) continue;
+          final noteData = Map<String, dynamic>.from(payload);
+          await txn.insert('reader_notes', {
+            'book_id': bookId,
+            'kind': kind.name,
+            'note_key': noteKey,
+            'payload': jsonEncode(noteData),
+            ..._queryFields(kind, noteData),
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      });
+      _notifyChanges();
+    });
+  }
+
+  static List<Map<String, dynamic>> _readingBackupRows(
+    Object? raw,
+    String name,
+  ) {
+    if (raw == null) return const [];
+    if (raw is! List || raw.any((row) => row is! Map)) {
+      throw FormatException('$name格式无效');
+    }
+    return [for (final row in raw) Map<String, dynamic>.from(row as Map)];
+  }
+
   static Future<Directory> _defaultDirectory() async {
     final supportDirectory = await getApplicationSupportDirectory();
     final directory = Directory(p.join(supportDirectory.path, 'reader'));
@@ -534,6 +751,9 @@ class LocalBookshelfRepository
     author: row['author'] as String,
     format: BookFormat.values.byName(row['format'] as String),
     source: BookSource.values.byName(row['source'] as String),
+    collection: row['collection'] == null
+        ? null
+        : BookCollection.values.byName(row['collection'] as String),
     fileName: row['file_name'] as String,
     coverPath: row['cover_file_name'] == null
         ? null
@@ -571,6 +791,7 @@ class LocalBookshelfRepository
           author: book.author,
           format: book.format,
           source: book.source,
+          collection: book.collection,
           fileName: book.fileName,
           addedAt: book.addedAt,
           coverPath: book.coverPath,
@@ -779,7 +1000,7 @@ class LocalBookshelfRepository
   });
 
   Future<BookContent> _parse(Uint8List bytes, String name) =>
-      parser is LocalBookParser
+      parser is LocalBookParser && p.extension(name).toLowerCase() != '.pdf'
       ? compute(_parseLocal, (bytes, name))
       : parser.parse(bytes, name);
 
@@ -823,8 +1044,11 @@ class LocalBookshelfRepository
       throw const FormatException('图书超过 50 MB 导入上限');
     }
     final extension = p.extension(fileName).toLowerCase();
-    if (extension != '.txt' && extension != '.epub' && extension != '.md') {
-      throw const FormatException('请选择 EPUB、TXT 或 Markdown（MD）文件');
+    if (extension != '.txt' &&
+        extension != '.epub' &&
+        extension != '.md' &&
+        extension != '.pdf') {
+      throw const FormatException('请选择 EPUB、PDF、TXT 或 Markdown（MD）文件');
     }
     final id = sha256.convert(bytes).toString();
     final existing = await _db.query('books', where: 'id = ?', whereArgs: [id]);
@@ -1070,7 +1294,54 @@ class LocalBookshelfRepository
       'dark': settings.dark ? 1 : 0,
       'options': jsonEncode(settings.toJson()),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+    _changes.add(null);
   });
+
+  @override
+  Future<void> setBookCollection(String bookId, BookCollection collection) =>
+      _serial(() async {
+        await _db.update(
+          'books',
+          {'collection': collection.name},
+          where: 'id = ?',
+          whereArgs: [bookId],
+        );
+        _changes.add(null);
+      });
+
+  @override
+  Future<void> setBookTags(String bookId, Map<String, String?> tags) =>
+      _serial(() async {
+        await _db.transaction((txn) async {
+          await txn.delete(
+            'book_tags',
+            where: 'book_id = ? AND is_catalog = 0',
+            whereArgs: [bookId],
+          );
+          for (final entry in tags.entries) {
+            final name = entry.key.trim();
+            if (name.isEmpty) continue;
+            final now = DateTime.now().millisecondsSinceEpoch;
+            await txn.insert('tags', {
+              'name': name,
+              'color': entry.value,
+              'created_at': now,
+            }, conflictAlgorithm: ConflictAlgorithm.ignore);
+            final row = (await txn.query(
+              'tags',
+              where: 'name = ?',
+              whereArgs: [name],
+            )).single;
+            await txn.insert('book_tags', {
+              'book_id': bookId,
+              'tag_id': row['id'],
+              'is_catalog': 0,
+              'created_at': now,
+            }, conflictAlgorithm: ConflictAlgorithm.ignore);
+          }
+        });
+        _changes.add(null);
+      });
 
   @override
   Future<void> syncCatalogTags(String bookId, Map<String, String?> tags) =>
@@ -1106,7 +1377,7 @@ class LocalBookshelfRepository
               'tag_id': tagId,
               'is_catalog': 1,
               'created_at': DateTime.now().millisecondsSinceEpoch,
-            }, conflictAlgorithm: ConflictAlgorithm.replace);
+            }, conflictAlgorithm: ConflictAlgorithm.ignore);
           }
           final existing = await txn.query(
             'book_tags',
@@ -1198,9 +1469,8 @@ class LocalBookshelfRepository
       final chapterDirectory = Directory(p.join(cache.path, 'chapters'));
       await chapterDirectory.create();
       for (var i = 0; i < content.chapters.length; i++) {
-        await File(
-          p.join(chapterDirectory.path, '$i.json'),
-        ).writeAsString(jsonEncode(content.chapters[i].blocks), flush: true);
+        await File(p.join(chapterDirectory.path, '$i.json'))
+            .writeAsString(jsonEncode(content.chapters[i].blocks), flush: true);
       }
       final manifest = <String, Object?>{
         'version': cacheFormatVersion,
@@ -1218,9 +1488,8 @@ class LocalBookshelfRepository
         ],
         'toc': _tocToJson(content.toc),
       };
-      await File(
-        p.join(cache.path, 'content.json'),
-      ).writeAsString(jsonEncode(manifest), flush: true);
+      await File(p.join(cache.path, 'content.json'))
+          .writeAsString(jsonEncode(manifest), flush: true);
       return true;
     } catch (_) {
       if (await cache.exists()) await cache.delete(recursive: true);
@@ -1288,9 +1557,8 @@ class LocalBookshelfRepository
   }
 
   static Iterable<String> _resourcePaths(String markup) sync* {
-    final matches = RegExp(
-      'data-reader-resource=["\\\']([^"\\\']+)["\\\']',
-    ).allMatches(markup);
+    final matches = RegExp('data-reader-resource=["\\\']([^"\\\']+)["\\\']')
+        .allMatches(markup);
     for (final match in matches) {
       final path = match.group(1);
       if (path != null) yield path;
@@ -1364,14 +1632,10 @@ class _CachedBookContent implements OnDemandBookContent {
   @override
   Future<BookChapter> loadChapter(int index) async {
     final metadata = chapters[index];
-    final blocks =
-        (jsonDecode(
-                  await File(
-                    p.join(directory.path, 'chapters', '$index.json'),
-                  ).readAsString(),
-                )
-                as List<dynamic>)
-            .cast<String>();
+    final blocks = (jsonDecode(
+      await File(p.join(directory.path, 'chapters', '$index.json'))
+          .readAsString(),
+    ) as List<dynamic>).cast<String>();
     return BookChapter(
       id: metadata.id,
       title: metadata.title,

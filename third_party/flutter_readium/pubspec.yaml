@@ -14,8 +14,8 @@ topics:
   - tts
 
 environment:
-  sdk: ">=3.8.0 <4.0.0"
-  flutter: '>=3.44.8'
+  sdk: '>=3.13.0 <4.0.0'
+  flutter: '>=3.47.0'
 
 flutter:
   plugin:
@@ -35,6 +35,7 @@ flutter:
     - assets/voice_data/
 
 dependencies:
+  material_ui: ^1.11.0
   flutter:
     sdk: flutter
   flutter_web_plugins:

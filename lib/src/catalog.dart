@@ -32,8 +32,10 @@ class CatalogBook {
     required this.assetPath,
     this.tags = const [],
     this.layoutAssetPath,
+    this.collection = BookCollection.ancient,
   });
   final String assetPath;
+  final BookCollection collection;
   final String? layoutAssetPath;
   final List<CatalogTag> tags;
 }
@@ -122,9 +124,12 @@ class ReaderLibrary {
       }
     }
     for (final entry in entries) {
-      await _import(entry.assetPath, {
-        for (final tag in entry.tags) tag.name: tag.color,
-      }, entry.layoutAssetPath);
+      await _import(
+        entry.assetPath,
+        {for (final tag in entry.tags) tag.name: tag.color},
+        entry.layoutAssetPath,
+        entry.collection,
+      );
     }
   }
 
@@ -132,6 +137,7 @@ class ReaderLibrary {
     String path,
     Map<String, String?> tags,
     String? layoutPath,
+    BookCollection collection,
   ) async {
     final data = await bundle.load(path);
     final book = await repository.importBytes(
@@ -139,6 +145,13 @@ class ReaderLibrary {
       path.split('/').last,
       source: BookSource.builtIn,
     );
+    if (repository is BookshelfMetadataRepository &&
+        book.source != BookSource.imported) {
+      await (repository as BookshelfMetadataRepository).setBookCollection(
+        book.id,
+        collection,
+      );
+    }
     if (layoutPath != null && repository is BookLayoutRepository) {
       final layout = BookLayout.fromJson(
         jsonDecode(await bundle.loadString(layoutPath)) as Map<String, dynamic>,
