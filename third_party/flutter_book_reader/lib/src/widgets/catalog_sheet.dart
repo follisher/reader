@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../bookmark/reader_bookmark_store.dart';
@@ -38,6 +40,7 @@ class CatalogSheet extends StatefulWidget {
     this.coverBuilder,
     this.isChapterLocked,
     this.initialTabIndex = 1,
+    this.catalogSummary,
   });
 
   /// Override the default artwork without coupling the engine to a bookshelf.
@@ -63,9 +66,9 @@ class CatalogSheet extends StatefulWidget {
   final List<Comment> comments;
 
   /// 删除某条书签 / 划线 / 评论（持久化交给外层）。
-  final void Function(Bookmark)? onDeleteBookmark;
-  final void Function(Underline)? onDeleteUnderline;
-  final void Function(Comment)? onDeleteComment;
+  final FutureOr<void> Function(Bookmark)? onDeleteBookmark;
+  final FutureOr<void> Function(Underline)? onDeleteUnderline;
+  final FutureOr<void> Function(Comment)? onDeleteComment;
 
   /// 外部滚动控制器（如 [DraggableScrollableSheet] 提供的）；为空时内部自建。
   /// 绑定到「目录」列表，使列表滚到顶部后继续下拉可关闭整个面板。
@@ -77,6 +80,9 @@ class CatalogSheet extends StatefulWidget {
 
   /// 初始标签页：0 详情、1 目录、2 笔记。默认从底部“目录”入口进入目录页。
   final int initialTabIndex;
+
+  /// Fixed-layout documents can describe pages or outline entries accurately.
+  final String? catalogSummary;
 
   @override
   State<CatalogSheet> createState() => _CatalogSheetState();
@@ -588,7 +594,7 @@ class _CatalogSheetState extends State<CatalogSheet>
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: <Widget>[
-              Text(labels.chapterTotal(_count),
+              Text(widget.catalogSummary ?? labels.chapterTotal(_count),
                   style: _sans(size: 13, color: _sub)),
               InkWell(
                 borderRadius: BorderRadius.circular(6),
@@ -746,19 +752,37 @@ class _CatalogSheetState extends State<CatalogSheet>
         ReadingPosition(chapterIndex: n.chapterIndex, charOffset: n.offset),
       );
 
-  void _deleteNote(_Note n) {
-    setState(() {
+  bool _deleting = false;
+
+  Future<void> _deleteNote(_Note n) async {
+    if (_deleting) return;
+    setState(() => _deleting = true);
+    try {
       if (n.isComment && n.comment != null) {
-        _comments.removeWhere((Comment e) => e.key == n.comment!.key);
-        widget.onDeleteComment?.call(n.comment!);
+        await widget.onDeleteComment?.call(n.comment!);
       } else if (n.isUnderline && n.underline != null) {
-        _underlines.removeWhere((Underline e) => e.key == n.underline!.key);
-        widget.onDeleteUnderline?.call(n.underline!);
+        await widget.onDeleteUnderline?.call(n.underline!);
       } else if (n.bookmark != null) {
-        _bookmarks.removeWhere((Bookmark e) => e.key == n.bookmark!.key);
-        widget.onDeleteBookmark?.call(n.bookmark!);
+        await widget.onDeleteBookmark?.call(n.bookmark!);
       }
-    });
+      if (!mounted) return;
+      setState(() {
+        if (n.isComment && n.comment != null) {
+          _comments.removeWhere((Comment e) => e.key == n.comment!.key);
+        } else if (n.isUnderline && n.underline != null) {
+          _underlines.removeWhere((Underline e) => e.key == n.underline!.key);
+        } else if (n.bookmark != null) {
+          _bookmarks.removeWhere((Bookmark e) => e.key == n.bookmark!.key);
+        }
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('删除失败，请重试')));
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
   }
 
   Widget _buildNotes(ReaderLabels labels) {
@@ -990,6 +1014,7 @@ class _CatalogSheetState extends State<CatalogSheet>
         ),
         PopupMenuItem<int>(
           value: 1,
+          enabled: !_deleting,
           child: Row(
             children: <Widget>[
               const Icon(Icons.delete_outline,

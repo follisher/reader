@@ -268,7 +268,12 @@ class LocalBookshelfRepository
         },
         onUpgrade: (db, oldVersion, _) async {
           if (oldVersion < 11) {
-            await db.execute('ALTER TABLE books ADD COLUMN collection TEXT');
+            // Some existing libraries already contain collection metadata while
+            // still reporting version 10. Preserve that column and its data.
+            final columns = await db.rawQuery('PRAGMA table_info(books)');
+            if (!columns.any((column) => column['name'] == 'collection')) {
+              await db.execute('ALTER TABLE books ADD COLUMN collection TEXT');
+            }
           }
           if (oldVersion < 10) {
             await db.execute('ALTER TABLE books ADD COLUMN anchor_json TEXT');

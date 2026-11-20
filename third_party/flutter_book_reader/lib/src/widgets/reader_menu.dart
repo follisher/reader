@@ -34,6 +34,10 @@ class ReaderMenu extends StatefulWidget {
     this.onStopAutoTurn,
     this.autoTurning = false,
     this.supportedFlipTypes = FlipType.values,
+    this.showAppearanceControls = true,
+    this.onWriteComment,
+    this.previousLabel,
+    this.nextLabel,
   });
 
   final bool visible;
@@ -75,6 +79,12 @@ class ReaderMenu extends StatefulWidget {
   /// 当前是否正在自动阅读：决定该入口显示「开启自动翻页」还是「停止自动阅读」。
   final bool autoTurning;
   final List<FlipType> supportedFlipTypes;
+
+  /// Fixed-layout publications can reuse the reading menu without text settings.
+  final bool showAppearanceControls;
+  final VoidCallback? onWriteComment;
+  final String? previousLabel;
+  final String? nextLabel;
 
   @override
   State<ReaderMenu> createState() => _ReaderMenuState();
@@ -407,7 +417,7 @@ class _ReaderMenuState extends State<ReaderMenu> {
       padding: const EdgeInsets.fromLTRB(26, 18, 26, 4),
       child: Row(
         children: <Widget>[
-          _seekText(_labels.prevChapter, widget.onPrevChapter),
+          _seekText(widget.previousLabel ?? _labels.prevChapter, widget.onPrevChapter),
           Expanded(
             child: _buildSlider(
               value: _dragProgress ?? widget.progress,
@@ -423,7 +433,7 @@ class _ReaderMenuState extends State<ReaderMenu> {
               },
             ),
           ),
-          _seekText(_labels.nextChapter, widget.onNextChapter),
+          _seekText(widget.nextLabel ?? _labels.nextChapter, widget.onNextChapter),
         ],
       ),
     );
@@ -486,23 +496,32 @@ class _ReaderMenuState extends State<ReaderMenu> {
             _setPanel(_Panel.none);
             widget.onOpenCatalog();
           }),
-          _navBtn(
-            _t.isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round,
-            _t.isDark ? _labels.dayMode : _labels.nightMode,
-            _t.isDark ? _accent : _sub,
-            _toggleDayNight,
-          ),
-          _navBtn(
-            _panel == _Panel.settings
-                ? Icons.settings
-                : Icons.settings_outlined,
-            _labels.settingsMenu,
-            _panel == _Panel.settings ? _accent : _sub,
-            () => _setPanel(
-              _panel == _Panel.settings ? _Panel.none : _Panel.settings,
+          if (widget.onWriteComment != null)
+            _navBtn(
+              Icons.mode_comment_outlined,
+              _labels.selectComment,
+              _sub,
+              widget.onWriteComment!,
             ),
-            active: _panel == _Panel.settings,
-          ),
+          if (widget.showAppearanceControls)
+            _navBtn(
+              _t.isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round,
+              _t.isDark ? _labels.dayMode : _labels.nightMode,
+              _t.isDark ? _accent : _sub,
+              _toggleDayNight,
+            ),
+          if (widget.showAppearanceControls)
+            _navBtn(
+              _panel == _Panel.settings
+                  ? Icons.settings
+                  : Icons.settings_outlined,
+              _labels.settingsMenu,
+              _panel == _Panel.settings ? _accent : _sub,
+              () => _setPanel(
+                _panel == _Panel.settings ? _Panel.none : _Panel.settings,
+              ),
+              active: _panel == _Panel.settings,
+            ),
         ],
       ),
     );

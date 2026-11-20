@@ -849,13 +849,19 @@ void main() {
     await tester.tap(find.text('最新').last);
     await tester.pumpAndSettle();
     await capture(tester, 'excerpts');
-    await tester.tap(find.byTooltip('更多操作').first);
+    expect(find.byTooltip('更多操作'), findsNothing);
+    expect(find.text('复制'), findsNothing);
+    expect(find.text('删除'), findsNothing);
+    expect(find.byTooltip('复制'), findsWidgets);
+    expect(find.byTooltip('删除'), findsWidgets);
+    await tester.tap(find.byTooltip('删除').first);
     await tester.pumpAndSettle();
-    expect(find.text('复制'), findsOneWidget);
-    expect(find.text('删除'), findsOneWidget);
-    await tester.tap(find.text('删除'));
-    await tester.pumpAndSettle();
-    expect(find.text('删除划线？'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('确认删除'), findsOneWidget);
+    expect(
+      await repo.loadNotes(book.id, ReaderNoteKind.underline),
+      hasLength(2),
+    );
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('值得再次阅读的句子'));
@@ -881,11 +887,57 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('摘录'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('更多操作'));
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = call.arguments['text'] as String;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final copyButton = find.byTooltip('复制');
+    final deleteButton = find.byTooltip('删除');
+    final cover = find.byType(RepositoryBookCover);
+    expect(
+      tester.getCenter(copyButton).dy,
+      closeTo(tester.getCenter(cover).dy, 1),
+    );
+    expect(
+      tester.getCenter(deleteButton).dy,
+      closeTo(tester.getCenter(cover).dy, 1),
+    );
+    expect(
+      tester.getCenter(copyButton).dx,
+      greaterThan(tester.getCenter(cover).dx),
+    );
+    await tester.tap(copyButton);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('删除'));
+    expect(copied, '唯一一条摘录');
+    expect(find.byTooltip('已复制'), findsOneWidget);
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
+    await tester.pump(const Duration(milliseconds: 1500));
+    expect(find.byTooltip('已复制'), findsNothing);
+    expect(find.byTooltip('复制'), findsOneWidget);
+    await tester.tap(find.byTooltip('删除'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    expect(find.text('确认删除'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('唯一一条摘录'), findsOneWidget);
+    expect(find.byTooltip('复制'), findsNothing);
+    expect(
+      await repo.loadNotes(book.id, ReaderNoteKind.underline),
+      hasLength(1),
+    );
+    await tester.tap(find.text('确认删除'));
     await tester.pumpAndSettle();
 
     expect(find.text('摘录'), findsOneWidget);

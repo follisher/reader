@@ -32,6 +32,7 @@ dependencies:
   flutter_readium:
     path: third_party/flutter_readium
   pdfrx: ^2.13.0
+  forui_lucide: ^0.28.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

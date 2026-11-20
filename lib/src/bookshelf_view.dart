@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:ui' show ImageFilter;
 
+import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,8 +15,21 @@ import 'providers.dart';
 import 'repository.dart';
 import 'theme/reader_palette.dart';
 import 'widget/book_cover.dart';
+import 'widget/bookshelf_icons.dart';
 
 enum _ShelfSection { shelf, excerpts }
+
+enum _ImportStatus { working, success, duplicate, failure }
+
+// Match the repository's content identity, regardless of the selected filename.
+String _importFingerprint(Uint8List bytes) => sha256.convert(bytes).toString();
+
+class _ImportFeedback {
+  const _ImportFeedback(this.status, this.text, {this.detail});
+  final _ImportStatus status;
+  final String text;
+  final String? detail;
+}
 
 enum _ExcerptSort { newest, oldest, random }
 
@@ -44,6 +59,20 @@ class BookshelfView extends ConsumerStatefulWidget {
 
 class _BookshelfViewState extends ConsumerState<BookshelfView> {
   bool _busy = false;
+  String? _activeImportCategory;
+  _ImportFeedback? _importFeedback;
+  Timer? _importFeedbackTimer;
+
+  _ImportFeedback? _feedbackFor(String? category) =>
+      category == _activeImportCategory ? _importFeedback : null;
+
+  void _setImportFeedback(_ImportStatus status, String text, {String? detail}) {
+    if (!mounted) return;
+    setState(
+      () => _importFeedback = _ImportFeedback(status, text, detail: detail),
+    );
+  }
+
   bool _searching = false;
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode();
@@ -82,6 +111,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
 
   @override
   void dispose() {
+    _importFeedbackTimer?.cancel();
     _excerptSubscription?.cancel();
     _searchController.dispose();
     _searchFocus.dispose();
@@ -106,10 +136,23 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
     );
   }
 
-  Future<void> _import() async {
+  Future<void> _import({
+    String? category,
+    bool editTags = true,
+    String? cardCategory,
+  }) async {
     if (_busy) return;
-    final initialTag = _selectedTag;
-    setState(() => _busy = true);
+    final initialTag = category ?? _selectedTag;
+    _importFeedbackTimer?.cancel();
+    setState(() {
+      _busy = true;
+      _activeImportCategory = cardCategory;
+      _importFeedback = const _ImportFeedback(
+        _ImportStatus.working,
+        '选择文件',
+        detail: '支持多选',
+      );
+    });
     try {
       final files = await openFiles(
         acceptedTypeGroups: [
@@ -125,8 +168,32 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           ),
         ],
       );
+      if (!mounted) return;
+      if (files.isEmpty) {
+        setState(() => _importFeedback = null);
+        return;
+      }
+      _setImportFeedback(_ImportStatus.working, '检查书库');
+      final repository = ref.read(bookshelfRepositoryProvider);
+      final knownBooks = {
+        for (final book in await repository.watchBooks().first) book.id: book,
+      };
+      if (!mounted) return;
       final messages = <String>[];
-      for (final file in files) {
+      var completed = 0;
+      var duplicates = 0;
+      var failures = 0;
+      void skipDuplicate(Book book) {
+        duplicates++;
+        messages.add('《${book.title}》已在“${book.collection.label}”中，已取消导入');
+        _setImportFeedback(_ImportStatus.duplicate, '图书已存在', detail: '已取消导入');
+      }
+
+      for (var index = 0; index < files.length; index++) {
+        if (!mounted) return;
+        final file = files[index];
+        final detail = '${index + 1} / ${files.length} 本';
+        _setImportFeedback(_ImportStatus.working, '读取文件', detail: detail);
         try {
           final name = file.name.toLowerCase();
           if (!name.endsWith('.txt') &&
@@ -140,41 +207,102 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           if (await file.length() > LocalBookParser.maxFileBytes) {
             throw const FormatException('超过 50 MB');
           }
-          final result = await ref
-              .read(bookshelfRepositoryProvider)
-              .importBytesWithResult(await file.readAsBytes(), file.name);
-          if (!result.isDuplicate && initialTag != null) {
-            final repository = ref.read(bookshelfRepositoryProvider);
+          final bytes = await file.readAsBytes();
+          if (!mounted) return;
+          _setImportFeedback(_ImportStatus.working, '检查重复', detail: detail);
+          final fingerprint = await compute(_importFingerprint, bytes);
+          if (!mounted) return;
+          final existing = knownBooks[fingerprint];
+          if (existing != null) {
+            skipDuplicate(existing);
+            continue;
+          }
+          _setImportFeedback(_ImportStatus.working, '正在导入', detail: detail);
+          final result = await repository.importBytesWithResult(
+            bytes,
+            file.name,
+          );
+          knownBooks[fingerprint] = result.book;
+          // The repository remains the race guard if another import completed
+          // after the preflight snapshot. Never edit metadata for duplicates.
+          if (result.isDuplicate) {
+            skipDuplicate(result.book);
+            continue;
+          }
+          if (initialTag != null &&
+              result.book.collection == BookCollection.personal) {
             if (repository is BookshelfMetadataRepository) {
+              _setImportFeedback(_ImportStatus.working, '正在归类', detail: detail);
               try {
+                final books = await repository.watchBooks().first;
+                final latest =
+                    books
+                        .where((book) => book.id == result.book.id)
+                        .firstOrNull ??
+                    result.book;
+                final color = books
+                    .expand((book) => book.tags)
+                    .where((tag) => tag.name == initialTag)
+                    .firstOrNull
+                    ?.color;
                 await (repository as BookshelfMetadataRepository).setBookTags(
                   result.book.id,
-                  {initialTag: null},
+                  {
+                    for (final tag in latest.tags) tag.name: tag.color,
+                    initialTag: color,
+                  },
                 );
               } catch (error) {
+                failures++;
                 messages.add(
                   '《${result.book.title}》已导入，分类保存失败：${readerError(error)}',
                 );
               }
             }
           }
-          if (mounted && result.book.collection == BookCollection.personal) {
+          if (editTags &&
+              mounted &&
+              result.book.collection == BookCollection.personal) {
+            _setImportFeedback(_ImportStatus.working, '设置分类', detail: detail);
             await _editTags(result.book, initialTag: initialTag);
           }
-          messages.add(
-            result.isDuplicate
-                ? '《${result.book.title}》已在书架中，已保留原有阅读进度'
-                : '已添加《${result.book.title}》',
-          );
+          completed++;
         } catch (error) {
+          failures++;
           messages.add('${file.name}：${readerError(error)}');
         }
       }
-      if (files.isNotEmpty) _message(messages.join('\n'));
+      if (failures > 0) {
+        _setImportFeedback(
+          _ImportStatus.failure,
+          completed == 0 ? '导入失败' : '部分未完成',
+          detail: '点击重试',
+        );
+      } else if (completed == 0 && duplicates > 0) {
+        _setImportFeedback(_ImportStatus.duplicate, '图书已存在', detail: '已取消导入');
+      } else {
+        _setImportFeedback(
+          _ImportStatus.success,
+          '导入完成',
+          detail: duplicates > 0
+              ? '已添加 $completed 本\n跳过 $duplicates 本'
+              : '已添加 $completed 本',
+        );
+      }
+      if (messages.isNotEmpty) _message(messages.join('\n'));
     } catch (error) {
+      _setImportFeedback(_ImportStatus.failure, '导入失败', detail: '点击重试');
       _message('无法导入：${readerError(error)}');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+        if (_importFeedback?.status == _ImportStatus.success ||
+            _importFeedback?.status == _ImportStatus.duplicate) {
+          _importFeedbackTimer = Timer(const Duration(seconds: 2), () {
+            if (mounted) setState(() => _importFeedback = null);
+          });
+        }
+      }
     }
   }
 
@@ -403,51 +531,6 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
   }
 
   Future<void> _deleteExcerpt(ExcerptItem item) async {
-    final label = item.isComment ? '评论' : '划线';
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        final theme = Theme.of(dialogContext);
-        final dark = theme.brightness == Brightness.dark;
-        final surface = dark ? const Color(0xFF25262A) : Colors.white;
-        return AlertDialog(
-          backgroundColor: surface,
-          surfaceTintColor: Colors.transparent,
-          elevation: 14,
-          shadowColor: Colors.black.withValues(alpha: dark ? .5 : .2),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          title: Text('删除$label？', textAlign: TextAlign.center),
-          content: Text(
-            '删除后将无法恢复这条$label。',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: theme.colorScheme.onSurface.withValues(alpha: .68),
-              height: 1.45,
-            ),
-          ),
-          actionsPadding: const EdgeInsets.fromLTRB(20, 4, 20, 18),
-          actionsAlignment: MainAxisAlignment.center,
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: ReaderPalette.accent,
-                foregroundColor: Colors.white,
-                elevation: 0,
-              ),
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('删除'),
-            ),
-          ],
-        );
-      },
-    );
-    if (confirmed != true) return;
     try {
       final repository = ref.read(bookshelfRepositoryProvider);
       if (repository is BookshelfInsightsRepository) {
@@ -468,6 +551,7 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       _reloadExcerpts();
     } catch (error) {
       _message('删除失败：${readerError(error)}');
+      rethrow;
     }
   }
 
@@ -562,29 +646,25 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                         _selectedCollection = value;
                         _selectedTag = null;
                       }),
-                      child: Text(value.label),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ExcludeSemantics(
+                            child: Icon(
+                              BookshelfIcons.collection(value),
+                              size: 18,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(value.label),
+                        ],
+                      ),
                     ),
                   ),
                 ),
             ],
           ),
         ),
-        if (_busy)
-          const Padding(
-            padding: EdgeInsets.only(top: 10),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                SizedBox(width: 10),
-                Text('正在导入图书…'),
-              ],
-            ),
-          ),
         if (entries.hasValue)
           _TagFilterBar(
             tags: {
@@ -652,7 +732,12 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
           return FittedBox(
             fit: BoxFit.contain,
             alignment: Alignment.topCenter,
-            child: _ImportBookCard(width: 113, busy: _busy, onTap: _import),
+            child: _ImportBookCard(
+              width: 113,
+              busy: _busy,
+              onTap: _import,
+              feedback: _feedbackFor(null),
+            ),
           );
         }
         final entry =
@@ -690,6 +775,9 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
       }
     }
     final categories = groups.keys.toList()..sort();
+    final globalImportAtEnd =
+        collection == BookCollection.personal &&
+        entries.any((entry) => entry.book.tags.isNotEmpty);
     return ScrollConfiguration(
       behavior: const _NoOverscrollBehavior(),
       child: ListView.builder(
@@ -699,18 +787,38 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
         itemCount:
             categories.length + (collection == BookCollection.personal ? 1 : 0),
         itemBuilder: (context, index) {
-          if (collection == BookCollection.personal && index == 0) {
+          if (collection == BookCollection.personal &&
+              index == (globalImportAtEnd ? categories.length : 0)) {
             return Padding(
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: _ImportBookCard(busy: _busy, onTap: _import),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (globalImportAtEnd) ...[
+                    Semantics(
+                      header: true,
+                      child: const BookshelfCategoryHeading(
+                        label: '继续导入',
+                        key: ValueKey('bookshelf-other-category-title'),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  _ImportBookCard(
+                    busy: _busy,
+                    onTap: _import,
+                    feedback: _feedbackFor(null),
+                  ),
+                ],
               ),
             );
           }
           final category =
               categories[index -
-                  (collection == BookCollection.personal ? 1 : 0)];
+                  (collection == BookCollection.personal && !globalImportAtEnd
+                      ? 1
+                      : 0)];
           final books = groups[category]!;
           return Padding(
             padding: const EdgeInsets.only(bottom: 24),
@@ -721,26 +829,24 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Semantics(
                     header: true,
-                    child: Text(
-                      category,
+                    child: BookshelfCategoryHeading(
+                      label: category,
                       key: ValueKey('bookshelf-category-title-$category'),
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
                     ),
                   ),
                 ),
                 const SizedBox(height: 12),
-                SizedBox(
+                Container(
                   height: 162,
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
                   child: SingleChildScrollView(
                     key: PageStorageKey(
                       'bookshelf-category-${collection.name}-$category',
                     ),
                     scrollDirection: Axis.horizontal,
                     physics: const ClampingScrollPhysics(),
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    // Let cover shadows paint into the row's outer margins.
+                    clipBehavior: Clip.none,
                     child: Row(
                       children: [
                         for (var i = 0; i < books.length; i++) ...[
@@ -752,6 +858,19 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                             markers: books[i].markers,
                             onTap: () => widget.onBookTap(books[i].book),
                             onLongPress: () => _bookActions(books[i].book),
+                          ),
+                        ],
+                        if (collection == BookCollection.personal) ...[
+                          const SizedBox(width: 12),
+                          _ImportBookCard(
+                            category: category,
+                            feedback: _feedbackFor(category),
+                            busy: _busy,
+                            onTap: () => _import(
+                              category: category == '未分类' ? null : category,
+                              editTags: false,
+                              cardCategory: category,
+                            ),
                           ),
                         ],
                       ],
@@ -884,6 +1003,11 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                     itemCount: visibleCount,
                     separatorBuilder: (_, _) => const SizedBox(height: 16),
                     itemBuilder: (context, index) => _ExcerptCard(
+                      key: ValueKey((
+                        items[index].ref.bookId,
+                        items[index].ref.kind,
+                        items[index].ref.noteKey,
+                      )),
                       item: items[index],
                       onTap: () => _openExcerpt(items[index]),
                       onDelete: () => _deleteExcerpt(items[index]),
@@ -896,7 +1020,6 @@ class _BookshelfViewState extends ConsumerState<BookshelfView> {
                               ].where((value) => value.isNotEmpty).join('\n\n')
                             : item.quote;
                         await Clipboard.setData(ClipboardData(text: text));
-                        _message('已复制');
                       },
                     ),
                   ),
@@ -939,6 +1062,7 @@ class _NoOverscrollBehavior extends MaterialScrollBehavior {
 
 class _ExcerptCard extends StatelessWidget {
   const _ExcerptCard({
+    super.key,
     required this.item,
     required this.onTap,
     required this.onCopy,
@@ -947,8 +1071,8 @@ class _ExcerptCard extends StatelessWidget {
 
   final ExcerptItem item;
   final VoidCallback onTap;
-  final VoidCallback onCopy;
-  final VoidCallback onDelete;
+  final Future<void> Function() onCopy;
+  final Future<void> Function() onDelete;
 
   String _date(int milliseconds) {
     if (milliseconds <= 0) return '';
@@ -962,205 +1086,272 @@ class _ExcerptCard extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final dark = theme.brightness == Brightness.dark;
-    final surface = dark ? const Color(0xFF25262A) : Colors.white;
+    final surface = dark ? Colors.black : Colors.white;
+    final outline = dark ? const Color(0xFF5E5E5E) : Colors.black;
     final accent = dark
         ? ReaderPalette.nightSubheading
         : ReaderPalette.inkSecondary;
-    return DecoratedBox(
+    return Container(
       decoration: BoxDecoration(
         color: surface,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
+        border: Border.all(color: Colors.black, width: 3),
+        boxShadow: const [
           BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? .3 : .12),
-            blurRadius: 16,
-            spreadRadius: -2,
-            offset: const Offset(0, 6),
-          ),
-          BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? .18 : .045),
-            blurRadius: 4,
-            offset: const Offset(0, 1),
+            color: Color.fromRGBO(0, 0, 0, .12),
+            blurRadius: 8,
+            spreadRadius: -3,
+            offset: Offset(0, 6),
           ),
         ],
       ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(18),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (item.isComment && item.quote.isNotEmpty) ...[
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.fromLTRB(11, 9, 8, 9),
-                    decoration: BoxDecoration(
-                      color: accent.withValues(alpha: dark ? .07 : .04),
-                      border: Border(
-                        left: BorderSide(
-                          color: accent.withValues(alpha: dark ? .34 : .24),
-                          width: 2.5,
-                        ),
-                      ),
-                    ),
-                    child: _ExpandableExcerptText(
-                      item.quote,
-                      collapsedLines: 4,
-                      style: TextStyle(
-                        height: 1.5,
-                        color: Theme.of(context).colorScheme.onSurface
-                            .withValues(alpha: .72),
-                      ),
-                    ),
-                  ),
-                  if (item.comment.isNotEmpty) const SizedBox(height: 14),
-                ],
-                if (!item.isComment || item.comment.isNotEmpty)
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2, right: 9),
-                        child: Icon(
-                          item.isComment
-                              ? Icons.chat_bubble_outline_rounded
-                              : Icons.format_quote_rounded,
-                          size: 20,
-                          color: accent,
-                        ),
-                      ),
-                      Expanded(
-                        child: _ExpandableExcerptText(
-                          item.isComment ? item.comment : item.quote,
-                          collapsedLines: 8,
-                          style: const TextStyle(fontSize: 16, height: 1.55),
-                        ),
-                      ),
-                    ],
-                  ),
-                const SizedBox(height: 16),
-                Divider(
-                  height: 1,
-                  thickness: 1,
-                  color: scheme.onSurface.withValues(alpha: dark ? .12 : .07),
-                ),
-                const SizedBox(height: 10),
-                Padding(
-                  padding: const EdgeInsets.only(left: 2),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 28,
-                        height: 38,
-                        child: FittedBox(
-                          alignment: Alignment.topLeft,
-                          child: RepositoryBookCover(book: item.book),
-                        ),
-                      ),
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              item.book.author.isEmpty
-                                  ? item.book.title
-                                  : '${item.book.title} · ${item.book.author}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              [
-                                item.chapterTitle,
-                                _date(item.createdAt),
-                              ].where((value) => value.isNotEmpty).join(' · '),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: scheme.onSurface.withValues(alpha: .56),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      PopupMenuButton<String>(
-                        tooltip: '更多操作',
-                        padding: EdgeInsets.zero,
-                        position: PopupMenuPosition.under,
-                        offset: const Offset(0, 6),
-                        color: surface,
-                        surfaceTintColor: Colors.transparent,
-                        shadowColor: Colors.black.withValues(
-                          alpha: dark ? .5 : .2,
-                        ),
-                        elevation: 10,
-                        constraints: const BoxConstraints(
-                          minWidth: 148,
-                          maxWidth: 180,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        icon: Icon(
-                          Icons.more_horiz,
-                          size: 21,
-                          color: scheme.onSurface.withValues(alpha: .62),
-                        ),
-                        onSelected: (value) =>
-                            value == 'copy' ? onCopy() : onDelete(),
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(
-                            value: 'copy',
-                            height: 48,
-                            child: Row(
-                              children: [
-                                Icon(Icons.content_copy_rounded, size: 19),
-                                SizedBox(width: 12),
-                                Text('复制'),
-                              ],
-                            ),
+      foregroundDecoration: const BoxDecoration(
+        border: Border.fromBorderSide(
+          BorderSide(
+            color: Color(0xFF5E5E5E),
+            width: .1,
+            strokeAlign: BorderSide.strokeAlignOutside,
+          ),
+        ),
+      ),
+      padding: const EdgeInsets.all(4),
+      child: Container(
+        decoration: BoxDecoration(border: Border.all(color: outline)),
+        child: Material(
+          color: Colors.transparent,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (item.isComment && item.quote.isNotEmpty) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(11, 9, 8, 9),
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: dark ? .07 : .04),
+                        border: Border(
+                          left: BorderSide(
+                            color: accent.withValues(alpha: dark ? .34 : .24),
+                            width: 2.5,
                           ),
-                          PopupMenuItem(
-                            value: 'delete',
-                            height: 48,
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.delete_outline_rounded,
-                                  size: 20,
-                                  color: ReaderPalette.inkSecondary,
+                        ),
+                      ),
+                      child: _ExpandableExcerptText(
+                        item.quote,
+                        collapsedLines: 4,
+                        style: TextStyle(
+                          height: 1.5,
+                          color: Theme.of(context).colorScheme.onSurface
+                              .withValues(alpha: .72),
+                        ),
+                      ),
+                    ),
+                    if (item.comment.isNotEmpty) const SizedBox(height: 14),
+                  ],
+                  if (!item.isComment || item.comment.isNotEmpty)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2, right: 9),
+                          child: Icon(
+                            item.isComment
+                                ? Icons.chat_bubble_outline_rounded
+                                : Icons.format_quote_rounded,
+                            size: 20,
+                            color: accent,
+                          ),
+                        ),
+                        Expanded(
+                          child: _ExpandableExcerptText(
+                            item.isComment ? item.comment : item.quote,
+                            collapsedLines: 8,
+                            style: const TextStyle(fontSize: 16, height: 1.55),
+                          ),
+                        ),
+                      ],
+                    ),
+                  const SizedBox(height: 16),
+                  Divider(
+                    height: 1,
+                    thickness: 1,
+                    color: scheme.onSurface.withValues(alpha: dark ? .12 : .07),
+                  ),
+                  const SizedBox(height: 10),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 2),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 28,
+                          height: 38,
+                          child: FittedBox(
+                            alignment: Alignment.topLeft,
+                            child: RepositoryBookCover(book: item.book),
+                          ),
+                        ),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item.book.author.isEmpty
+                                    ? item.book.title
+                                    : '${item.book.title} · ${item.book.author}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
                                 ),
-                                SizedBox(width: 12),
-                                Text(
-                                  '删除',
-                                  style: TextStyle(
-                                    color: ReaderPalette.inkSecondary,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                [item.chapterTitle, _date(item.createdAt)]
+                                    .where((value) => value.isNotEmpty)
+                                    .join(' · '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: scheme.onSurface.withValues(
+                                    alpha: .56,
                                   ),
+                                  fontSize: 11,
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ],
+                        ),
+                        const SizedBox(width: 8),
+                        _ExcerptActions(onCopy: onCopy, onDelete: onDelete),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ExcerptActions extends StatefulWidget {
+  const _ExcerptActions({required this.onCopy, required this.onDelete});
+  final Future<void> Function() onCopy;
+  final Future<void> Function() onDelete;
+
+  @override
+  State<_ExcerptActions> createState() => _ExcerptActionsState();
+}
+
+class _ExcerptActionsState extends State<_ExcerptActions> {
+  bool _confirming = false;
+  bool _deleting = false;
+  bool _copying = false;
+  bool _copied = false;
+  bool _copyFailed = false;
+  Timer? _copyReset;
+
+  Future<void> _copy() async {
+    if (_copying || _copied) return;
+    setState(() {
+      _copying = true;
+      _copyFailed = false;
+    });
+    try {
+      await widget.onCopy();
+      if (!mounted) return;
+      setState(() => _copied = true);
+      _copyReset?.cancel();
+      _copyReset = Timer(const Duration(milliseconds: 1500), () {
+        if (mounted) setState(() => _copied = false);
+      });
+    } catch (_) {
+      if (mounted) setState(() => _copyFailed = true);
+    } finally {
+      if (mounted) setState(() => _copying = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _copyReset?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _delete() async {
+    if (_deleting) return;
+    setState(() => _deleting = true);
+    try {
+      await widget.onDelete();
+      if (mounted) setState(() => _confirming = false);
+    } catch (_) {
+      // The shelf reports the failure; retain confirmation so it can be retried.
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextButton.styleFrom(
+      foregroundColor: Theme.of(context).colorScheme.onSurface
+          .withValues(alpha: .62),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      minimumSize: const Size(0, 48),
+      textStyle: const TextStyle(fontSize: 12),
+    );
+    final color = Theme.of(context).colorScheme.onSurface
+        .withValues(alpha: .62);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (!_confirming) ...[
+          IconButton(
+            tooltip: _copied
+                ? '已复制'
+                : _copyFailed
+                ? '复制失败，点击重试'
+                : '复制',
+            onPressed: _copying || _copied ? null : _copy,
+            color: color,
+            disabledColor: color,
+            icon: Icon(
+              _copied
+                  ? Icons.check_rounded
+                  : _copyFailed
+                  ? Icons.error_outline_rounded
+                  : Icons.content_copy_rounded,
+              size: 18,
+            ),
+          ),
+          IconButton(
+            tooltip: '删除',
+            onPressed: () => setState(() => _confirming = true),
+            color: color,
+            icon: const Icon(Icons.delete_outline_rounded, size: 18),
+          ),
+        ] else ...[
+          TextButton(
+            style: style,
+            onPressed: _deleting ? null : _delete,
+            child: Text(_deleting ? '删除中' : '确认删除'),
+          ),
+          TextButton(
+            style: style,
+            onPressed: _deleting
+                ? null
+                : () => setState(() => _confirming = false),
+            child: const Text('取消'),
+          ),
+        ],
+      ],
     );
   }
 }
@@ -1619,7 +1810,7 @@ class _ShelfExcerptSwitcher extends StatelessWidget {
                       ? '搜索书名或作者'
                       : '搜索摘录、书名或作者',
                   hintStyle: const TextStyle(fontSize: 12),
-                  filled: true,
+                  filled: false,
                   isDense: true,
                   constraints: const BoxConstraints.tightFor(height: 34),
                   contentPadding: const EdgeInsets.only(top: 8),
@@ -1865,7 +2056,11 @@ class _ImportBookCard extends StatelessWidget {
     required this.busy,
     required this.onTap,
     this.width = 113,
+    this.category,
+    this.feedback,
   });
+  final _ImportFeedback? feedback;
+  final String? category;
   final bool busy;
   final VoidCallback onTap;
   final double width;
@@ -1874,13 +2069,22 @@ class _ImportBookCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = Theme.of(context).colorScheme.onSurface.withValues(alpha: .5);
     return SizedBox(
-      key: const ValueKey('bookshelf-import-card'),
+      key: ValueKey(
+        category == null
+            ? 'bookshelf-import-card'
+            : 'bookshelf-category-import-$category',
+      ),
       width: width,
       height: 162,
       child: Semantics(
         button: true,
         enabled: !busy,
-        label: '添加私藏图书，支持 EPUB、PDF、TXT、Markdown',
+        liveRegion: feedback != null,
+        label: feedback != null
+            ? '${feedback!.text}，${feedback!.detail ?? ''}'
+            : category == null
+            ? '添加私藏图书，支持 EPUB、PDF、TXT、Markdown'
+            : '添加图书到$category，支持 EPUB、PDF、TXT、Markdown',
         child: CustomPaint(
           painter: _DashedBookBorder(color),
           child: Material(
@@ -1892,20 +2096,44 @@ class _ImportBookCard extends StatelessWidget {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text(
-                      busy ? '…' : '+',
-                      style: TextStyle(fontSize: 36, color: color),
-                    ),
+                    if (feedback == null)
+                      Text('+', style: TextStyle(fontSize: 36, color: color))
+                    else
+                      SizedBox(
+                        width: 36,
+                        height: 36,
+                        child: feedback!.status == _ImportStatus.working
+                            ? Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: color,
+                                ),
+                              )
+                            : Icon(
+                                switch (feedback!.status) {
+                                  _ImportStatus.success =>
+                                    Icons.check_circle_outline,
+                                  _ImportStatus.duplicate => Icons.info_outline,
+                                  _ => Icons.error_outline,
+                                },
+                                size: 32,
+                                color: color,
+                              ),
+                      ),
                     const SizedBox(height: 8),
-                    Text(
-                      busy ? '正在导入' : '添加图书',
-                      style: TextStyle(fontSize: 14, color: color),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        feedback?.text ?? '添加图书',
+                        style: TextStyle(fontSize: 14, color: color),
+                      ),
                     ),
                     const SizedBox(height: 8),
                     FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Text(
-                        'EPUB / PDF\nTXT / MD',
+                        feedback?.detail ?? 'EPUB / PDF\nTXT / MD',
                         textAlign: TextAlign.center,
                         style: TextStyle(fontSize: 12, color: color),
                       ),
@@ -1997,6 +2225,15 @@ class _TagFilterBar extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: ChoiceChip(
+        avatar: ExcludeSemantics(
+          child: Icon(
+            BookshelfIcons.category(label),
+            size: 16,
+            color: isSelected
+                ? (dark ? ReaderPalette.ink : Colors.white)
+                : (dark ? ReaderPalette.nightInk : ReaderPalette.inkSecondary),
+          ),
+        ),
         label: Text(label),
         selected: isSelected,
         showCheckmark: false,

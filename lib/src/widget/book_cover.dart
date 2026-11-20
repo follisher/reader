@@ -226,7 +226,8 @@ class _BookCoverArtwork extends StatelessWidget {
             final coverRight = pageDepth;
             const tabSize = 4.0;
             return Stack(
-              clipBehavior: Clip.hardEdge,
+              // Shadows may extend beyond the cover's fixed layout bounds.
+              clipBehavior: Clip.none,
               children: [
                 Positioned(
                   left: 5,
@@ -255,7 +256,11 @@ class _BookCoverArtwork extends StatelessWidget {
                   child: RepaintBoundary(
                     child: CustomPaint(
                       isComplex: true,
-                      painter: _PageEdgesPainter(pageDepth, _clothColor()),
+                      painter: _PageEdgesPainter(
+                        pageDepth,
+                        _clothColor(),
+                        whitePaper: book.collection == BookCollection.personal,
+                      ),
                     ),
                   ),
                 ),
@@ -701,9 +706,14 @@ class _PaperSlipPainter extends CustomPainter {
 }
 
 class _PageEdgesPainter extends CustomPainter {
-  const _PageEdgesPainter(this.depth, this.coverColor);
+  const _PageEdgesPainter(
+    this.depth,
+    this.coverColor, {
+    this.whitePaper = false,
+  });
   final double depth;
   final Color coverColor;
+  final bool whitePaper;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -719,10 +729,12 @@ class _PageEdgesPainter extends CustomPainter {
     canvas.drawPath(
       top,
       Paint()
-        ..shader = const LinearGradient(
+        ..shader = LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xFFF8EFD9), Color(0xFFF1E6CD)],
+          colors: whitePaper
+              ? const [Color(0xFFFFFFFF), Color(0xFFF1F1F1)]
+              : const [Color(0xFFF8EFD9), Color(0xFFF1E6CD)],
         ).createShader(Rect.fromLTWH(0, 0, size.width, topHeight)),
     );
     final side = Path()
@@ -734,7 +746,13 @@ class _PageEdgesPainter extends CustomPainter {
     final paperRect = Rect.fromLTWH(front, 0, depth, size.height);
     canvas.save();
     canvas.clipPath(side);
-    canvas.drawRect(paperRect, Paint()..color = const Color(0xFFE3D5B8));
+    canvas.drawRect(
+      paperRect,
+      Paint()
+        ..color = (whitePaper
+            ? const Color(0xFFF5F5F5)
+            : const Color(0xFFE3D5B8)),
+    );
     canvas.restore();
     // Decorative texture density depends on visible depth, not actual pages.
     final textureCount = (depth / .7).floor().clamp(1, 32);
@@ -751,14 +769,14 @@ class _PageEdgesPainter extends CustomPainter {
     canvas.drawPath(
       darkLines,
       Paint()
-        ..color = const Color(0x807B6B50)
+        ..color = whitePaper ? const Color(0x809E9E9E) : const Color(0x807B6B50)
         ..style = PaintingStyle.stroke
         ..strokeWidth = .05,
     );
     canvas.drawPath(
       lightLines,
       Paint()
-        ..color = const Color(0x80F0E5CD)
+        ..color = whitePaper ? const Color(0xB3FFFFFF) : const Color(0x80F0E5CD)
         ..style = PaintingStyle.stroke
         ..strokeWidth = .05,
     );
@@ -766,15 +784,17 @@ class _PageEdgesPainter extends CustomPainter {
     canvas.drawPath(
       side,
       Paint()
-        ..shader = const LinearGradient(
-          colors: [Color(0x40000000), Color(0x00000000), Color(0x1A000000)],
+        ..shader = LinearGradient(
+          colors: whitePaper
+              ? const [Color(0x1A000000), Color(0x00000000), Color(0x0A000000)]
+              : const [Color(0x40000000), Color(0x00000000), Color(0x1A000000)],
           stops: [0, .7, 1],
         ).createShader(Rect.fromLTWH(front, 0, depth, size.height)),
     );
     canvas.drawPath(
       side,
       Paint()
-        ..color = const Color(0x506F5E43)
+        ..color = whitePaper ? const Color(0x50808080) : const Color(0x506F5E43)
         ..style = PaintingStyle.stroke
         ..strokeWidth = .05,
     );
@@ -786,7 +806,7 @@ class _PageEdgesPainter extends CustomPainter {
     canvas.drawPath(
       coverEdges,
       Paint()
-        ..color = coverColor
+        ..color = whitePaper ? const Color(0xFFBDBDBD) : coverColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = .7,
     );
@@ -794,7 +814,9 @@ class _PageEdgesPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PageEdgesPainter old) =>
-      depth != old.depth || coverColor != old.coverColor;
+      depth != old.depth ||
+      coverColor != old.coverColor ||
+      whitePaper != old.whitePaper;
 }
 
 /// Connects both display surfaces to the same cached edition and live notes.
